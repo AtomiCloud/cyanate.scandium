@@ -41,10 +41,15 @@ RUN bun install --frozen-lockfile || bun install
 # Install Playwright browsers
 RUN bunx playwright install chromium
 
+# Create non-root user (Claude Code refuses bypassPermissions as root)
+RUN useradd -m -s /bin/bash scraper
+
 # Copy source
-COPY . .
+COPY --chown=scraper:scraper . .
 
 # Create output directory
-RUN mkdir -p output
+RUN mkdir -p output && chown scraper:scraper output
+
+USER scraper
 
 ENTRYPOINT ["bun", "run", "index.ts"]
