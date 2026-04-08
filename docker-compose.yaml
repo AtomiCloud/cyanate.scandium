@@ -1,0 +1,7 @@
+services:
+  scraper:
+    image: ghcr.io/atomicloud/cyanate.scandium/scraper:latest
+    env_file: .env
+    volumes:
+      - ./output:/app/output
+    restart: "no"
