@@ -3,8 +3,6 @@ FROM oven/bun:1 AS base
 # Install Node.js (needed by Agent SDK subprocess) and Playwright dependencies
 RUN apt-get update && apt-get install -y \
     curl \
-    nodejs \
-    npm \
     # Playwright Chromium dependencies
     libnss3 \
     libnspr4 \
@@ -25,6 +23,14 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     libwayland-client0 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 22 (Agent SDK needs it)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI globally (Agent SDK spawns it as subprocess)
+RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
 
