@@ -50,6 +50,11 @@ COPY --chown=scraper:scraper . .
 # Create output directory
 RUN mkdir -p output && chown scraper:scraper output
 
-USER scraper
+# Install gosu for dropping privileges in entrypoint
+RUN apt-get update && apt-get install -y gosu && rm -rf /var/lib/apt/lists/*
 
-ENTRYPOINT ["bun", "run", "index.ts"]
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Entrypoint runs as root, creates dirs, then drops to scraper user via gosu
+ENTRYPOINT ["/app/entrypoint.sh"]
