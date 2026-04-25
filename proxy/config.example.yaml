@@ -1,0 +1,42 @@
+port: 8317
+debug: true
+commercial-mode: false
+incognito-browser: true
+logging-to-file: true
+logs-max-total-size-mb: 0
+usage-statistics-enabled: true
+proxy-url: ""
+force-model-prefix: false
+request-retry: 3
+max-retry-interval: 30
+auth-dir: "/tmp/cli-proxy-auth"
+routing:
+  strategy: "round-robin"
+ws-auth: false
+nonstream-keepalive-interval: 0
+api-keys:
+  - "your-proxy-api-key"
+openai-compatibility:
+  - name: Friendli
+    base-url: https://api.friendli.ai/serverless/v1
+    api-key-entries:
+      - api-key: your-friendli-api-key
+    models:
+      - name: zai-org/GLM-5.1
+        alias: ""
+
+payload:
+  override:
+    - models:
+        - name: "qwen-3-*"
+          protocol: "openai"
+        - name: "zai-glm-*"
+          protocol: "openai"
+        - name: "gpt-oss-*"
+          protocol: "openai"
+        - name: "llama*"
+          protocol: "openai"
+        - name: "zai-org/*"
+          protocol: "openai"
+      params:
+        "reasoning_effort": "none"

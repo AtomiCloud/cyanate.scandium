@@ -1,7 +1,11 @@
 import { writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import path from 'path';
 
-const PAGES_DIR = 'output/pages';
+let PAGES_DIR = 'output/pages';
+
+export function setPagesDir(dir: string) {
+  PAGES_DIR = dir;
+}
 
 function ensurePagesDir() {
   mkdirSync(PAGES_DIR, { recursive: true });

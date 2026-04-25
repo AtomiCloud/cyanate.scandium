@@ -1,0 +1,10 @@
+services:
+  cli-proxy-api:
+    image: eceasy/cli-proxy-api:latest
+    pull_policy: always
+    container_name: scandium-proxy
+    ports:
+      - "8317:8317"
+    volumes:
+      - ./config.yaml:/CLIProxyAPI/config.yaml
+    restart: unless-stopped

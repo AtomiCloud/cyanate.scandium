@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 
 import path from 'path';
 import { query, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { crawlSite } from './crawler.js';
-import { savePage, urlToFilename } from './tools.js';
+import { savePage, urlToFilename, setPagesDir } from './tools.js';
 import { extractContentFromHtml } from './api.js';
 import type { SiteStructure, FilteredOutput, SchemaOutput, GroupedContentOutput, PageType } from './types.js';
 
@@ -11,8 +11,64 @@ import type { SiteStructure, FilteredOutput, SchemaOutput, GroupedContentOutput,
 const CRAWL_CONCURRENCY = parseInt(process.env.CRAWL_CONCURRENCY || '10');
 const EXTRACT_CONCURRENCY = parseInt(process.env.EXTRACT_CONCURRENCY || '5');
 const EXTRACT_RETRIES = 3;
-const OUTPUT_DIR = 'output';
-const PAGES_DIR = path.join(OUTPUT_DIR, 'pages');
+const AGENT_MODEL = process.env.LLM_MODEL || undefined;
+const AGENT_ENV: Record<string, string> = {};
+if (process.env.ANTHROPIC_BASE_URL) AGENT_ENV.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL;
+if (process.env.ANTHROPIC_AUTH_TOKEN) AGENT_ENV.ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
+if (process.env.ANTHROPIC_API_KEY) AGENT_ENV.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+if (process.env.DISABLE_THINKING) {
+  AGENT_ENV.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING = '1';
+  AGENT_ENV.MAX_THINKING_TOKENS = '0';
+}
+const INPUT_COST_PER_M = parseFloat(process.env.INPUT_COST_PER_M || '1.40');
+const OUTPUT_COST_PER_M = parseFloat(process.env.OUTPUT_COST_PER_M || '4.40');
+let OUTPUT_DIR = '';
+let PAGES_DIR = '';
+
+// --- Cost Tracking ---
+interface PhaseStats {
+  name: string;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+  timeMs: number;
+}
+
+const phaseStats: PhaseStats[] = [];
+
+function calcCost(inputTokens: number, outputTokens: number): number {
+  return (inputTokens / 1_000_000) * INPUT_COST_PER_M + (outputTokens / 1_000_000) * OUTPUT_COST_PER_M;
+}
+
+function recordPhase(name: string, inputTokens: number, outputTokens: number, timeMs: number) {
+  const cost = calcCost(inputTokens, outputTokens);
+  phaseStats.push({ name, inputTokens, outputTokens, cost, timeMs });
+  console.log(`  Input tokens: ${inputTokens.toLocaleString()}`);
+  console.log(`  Output tokens: ${outputTokens.toLocaleString()}`);
+  console.log(`  Cost: $${cost.toFixed(4)}`);
+}
+
+function printTotalSummary(totalTimeMs: number) {
+  const totals = phaseStats.reduce(
+    (acc, p) => ({
+      inputTokens: acc.inputTokens + p.inputTokens,
+      outputTokens: acc.outputTokens + p.outputTokens,
+      cost: acc.cost + p.cost,
+    }),
+    { inputTokens: 0, outputTokens: 0, cost: 0 }
+  );
+
+  console.log(`\n${'━'.repeat(50)}`);
+  console.log('  Cost Summary');
+  console.log(`${'━'.repeat(50)}`);
+  for (const p of phaseStats) {
+    console.log(`  ${p.name}: $${p.cost.toFixed(4)} (${p.inputTokens.toLocaleString()} in / ${p.outputTokens.toLocaleString()} out) [${formatTime(p.timeMs)}]`);
+  }
+  console.log(`${'─'.repeat(50)}`);
+  console.log(`  Total: $${totals.cost.toFixed(4)} (${totals.inputTokens.toLocaleString()} in / ${totals.outputTokens.toLocaleString()} out)`);
+  console.log(`  Total time: ${formatTime(totalTimeMs)}`);
+  console.log(`${'━'.repeat(50)}\n`);
+}
 
 // --- TUI Helpers ---
 function printPhaseHeader(phase: number, name: string) {
@@ -36,6 +92,33 @@ function formatTime(ms: number): string {
 }
 
 // --- Helpers ---
+function resolveRefs(schema: any): any {
+  const defs = schema.$defs || schema.definitions || {};
+
+  function resolve(node: any): any {
+    if (node === null || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(resolve);
+
+    if (node.$ref && typeof node.$ref === 'string') {
+      // Parse "#/$defs/foo" or "#/definitions/foo"
+      const match = node.$ref.match(/^#\/(\$defs|definitions)\/(.+)$/);
+      if (match && defs[match[2]]) {
+        return resolve(structuredClone(defs[match[2]]));
+      }
+      return node;
+    }
+
+    const result: any = {};
+    for (const [key, value] of Object.entries(node)) {
+      if (key === '$defs' || key === 'definitions' || key === '$schema') continue;
+      result[key] = resolve(value);
+    }
+    return result;
+  }
+
+  return resolve(schema);
+}
+
 function normalizeSchema(raw: any): SchemaOutput {
   // Case 1: already correct format { pages: { landing: {...}, doctor_profile: {...} } }
   if (raw.pages && typeof raw.pages === 'object' && !raw.pages.type) {
@@ -105,53 +188,40 @@ async function phase2Structure(websiteUrl: string): Promise<void> {
 
   const urlList = urls.map((u, i) => `${i + 1}. ${u} (file: ${PAGES_DIR}/${pageFiles[i]})`).join('\n');
 
-  const systemPrompt = `You are a website structure analyzer. Your job is to analyze crawled URLs, filter out auto-generated pages, and group the remaining pages by type.
+  const systemPrompt = `You are a website structure analyzer. Your job is to analyze crawled URLs, filter out duplicate/auto-generated pages, and group the remaining pages by type.
 
 ## Step 1: Filter Pages
 
-### MUST filter (skip these immediately):
-- Non-primary language pages: URLs under /zh/, /ja/, /fr/, /de/, /es/ etc. These are translations — filter ALL of them. Do NOT create separate _zh or _ja page types.
-- Date archives: URLs that are purely date-based paths like /2024/03/29/, /2025/01/
-- Pagination: URLs containing /page/2/, /page/3/ etc.
-- Category/tag listing pages: URLs like /category/articles/, /doctor-category/cardiology/ — these just list/filter content that exists on individual pages
+Only filter pages that are truly duplicates or auto-generated with no unique content:
 
-### MUST verify before filtering:
-For any other ambiguous URL, use the Read tool to check the HTML:
-- If the page body is just a list of links/cards to other pages with no unique content → skip
-- If the page has unique text, images, forms, or information → keep
+- **Non-primary language translations**: URLs under language prefixes like /zh/, /ja/, /fr/, /de/, /es/ etc. These are translations of pages that already exist in the primary language — filter ALL of them.
+- **Date-only archives**: URLs that are purely date-based paths like /2024/03/29/, /2025/01/ — these are auto-generated date indexes with no unique content.
+- **Pagination**: URLs containing /page/2/, /page/3/ etc. — these are just paginated views of existing listing pages.
 
-### The Rule
-If a page has unique content worth rebuilding, keep it. If it's a transition/listing/pagination page or non-primary language translation, skip it.
+### KEEP everything else
+Keep ALL pages that have any unique content, layout, or purpose — including:
+- Category/tag listing pages (these group content and may have unique layouts)
+- Search results pages
+- Any page with content that a user would want to visit
+
+### When unsure
+Use the Read tool to check the HTML. If the page has any unique text, images, forms, or information beyond just navigation — keep it.
 
 ## Step 2: Group Kept Pages by Type
 
 Be SPECIFIC with page types. Do NOT lump different pages into a generic "static_page" type. Each distinct kind of page should have its own type.
 
-Examples of good page types:
-- landing — the homepage (/)
-- about — about us page (/about-us/)
-- service_overview — main services listing (/our-services/)
-- service_detail — individual service pages (/specialist-care/, /diagnostics-imaging/)
-- team_listing — meet the team page (/meet-our-team/)
-- doctor_profile — individual doctor pages (/doctor/{slug}/)
-- blog_post — individual articles/news posts
-- blog_listing — news/articles index page (/news-events/)
-- event_listing — events page (/events/)
-- patient_journey — patient journey page
-- contact — contact page
-- legal — privacy policy, terms & conditions
-
 Rules:
-- Pages with the same URL path structure = same page type
-- Use {slug} or {id} for variable parts
-- Unique pages (/, /about-us/, /our-services/) each get their own type if they have distinct content/layout
+- Pages with the same URL path structure and similar layout = same page type
+- Use {slug} or {id} for variable parts in URL patterns
+- Unique standalone pages each get their own type if they have distinct content/layout
 - Do NOT group unrelated pages together just because they're "static"
 
 ## Output
 Write EXACTLY two files and nothing else:
 
-1. output/structure.json — kept pages grouped by type
-2. output/filtered.json — skipped pages with reasons
+1. ${OUTPUT_DIR}/structure.json — kept pages grouped by type
+2. ${OUTPUT_DIR}/filtered.json — skipped pages with reasons
 
 DO NOT write any other files. DO NOT write schema.json — that is handled by a later phase.
 
@@ -165,25 +235,25 @@ ${urlList}
 
 The cleaned HTML for each page is saved on disk. Use the Read tool to inspect any page you need to verify.
 
-Write output/structure.json with this format:
+Write ${OUTPUT_DIR}/structure.json with this format:
 {
   "site_url": "${websiteUrl}",
   "scraped_at": "${new Date().toISOString()}",
-  "primary_language": "en",
+  "primary_language": "<detected primary language>",
   "total_crawled": ${pageFiles.length},
   "total_kept": <number>,
   "page_types": [
     {
-      "name": "doctor_profile",
-      "url_pattern": "/doctor/{slug}/",
-      "description": "Individual doctor profile page",
-      "sample_urls": ["/doctor/dr-someone/", "/doctor/dr-other/"],
-      "urls": ["/doctor/dr-someone/", "/doctor/dr-other/", ...]
+      "name": "<descriptive_snake_case_name>",
+      "url_pattern": "/<path>/{slug}/",
+      "description": "<what this page type represents>",
+      "sample_urls": ["<example url 1>", "<example url 2>"],
+      "urls": ["<all urls of this type>"]
     }
   ]
 }
 
-Write output/filtered.json with this format:
+Write ${OUTPUT_DIR}/filtered.json with this format:
 {
   "total_filtered": <number>,
   "pages": [
@@ -202,6 +272,8 @@ Write output/filtered.json with this format:
       cwd: process.cwd(),
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
+      ...(AGENT_MODEL ? { model: AGENT_MODEL } : {}),
+      ...(Object.keys(AGENT_ENV).length > 0 ? { env: { ...process.env, ...AGENT_ENV } } : {}),
     },
   });
 
@@ -222,6 +294,8 @@ Write output/filtered.json with this format:
     if (message.type === 'result') {
       clearInterval(heartbeat);
       const resultMsg = message as SDKResultMessage;
+      const usage = resultMsg.usage ?? { input_tokens: 0, output_tokens: 0 };
+      recordPhase('Phase 2: Structure', usage.input_tokens ?? 0, usage.output_tokens ?? 0, Date.now() - startTime);
       if (resultMsg.subtype !== 'success') {
         throw new Error(`Phase 2 failed: ${resultMsg.subtype}`);
       }
@@ -264,34 +338,62 @@ Write output/filtered.json with this format:
     console.log(`  ⚠ Validation: ${missingUrls.length} pages on disk not accounted for by agent`);
 
     let autoFixed = 0;
+    const unmatched: string[] = [];
     for (const url of missingUrls) {
-      // Try to match against existing page type patterns
-      let matched = false;
+      // Find the most specific matching page type (most literal segments)
+      const urlParts = url.split('/').filter(Boolean);
+      let bestMatch: PageType | null = null;
+      let bestLiteralCount = -1;
+
       for (const pt of structure.page_types) {
-        // Check if this URL matches the pattern of this page type
-        // e.g., /doctor/dr-amy-wong/ matches /doctor/{slug}/
         const patternParts = pt.url_pattern.split('/').filter(Boolean);
-        const urlParts = url.split('/').filter(Boolean);
 
         if (patternParts.length === urlParts.length) {
           const matches = patternParts.every((part, i) =>
             part.startsWith('{') || part === urlParts[i]
           );
           if (matches) {
-            pt.urls.push(url);
-            matched = true;
-            autoFixed++;
-            console.log(`    ✓ Auto-added ${url} → ${pt.name}`);
-            break;
+            const literalCount = patternParts.filter(p => !p.startsWith('{')).length;
+            if (literalCount > bestLiteralCount) {
+              bestLiteralCount = literalCount;
+              bestMatch = pt;
+            }
           }
         }
       }
-      if (!matched) {
+
+      if (bestMatch) {
+        bestMatch.urls.push(url);
+        autoFixed++;
+        console.log(`    ✓ Auto-added ${url} → ${bestMatch.name}`);
+      } else {
+        unmatched.push(url);
         console.log(`    ? Could not auto-assign: ${url}`);
       }
     }
 
+    // Create individual page types for unmatched pages so they get schemas and content extraction
+    if (unmatched.length > 0) {
+      for (const url of unmatched) {
+        const parts = url.split('/').filter(Boolean);
+        const typeName = parts.length > 0 ? parts.join('_') : 'index';
+        structure.page_types.push({
+          name: typeName,
+          url_pattern: url,
+          description: `Standalone page: ${url}`,
+          sample_urls: [url],
+          urls: [url],
+        });
+        autoFixed++;
+        console.log(`    ✓ Created page type "${typeName}" for ${url}`);
+      }
+    }
+
     if (autoFixed > 0) {
+      // Deduplicate urls within each page type
+      for (const pt of structure.page_types) {
+        pt.urls = [...new Set(pt.urls)];
+      }
       // Update totals and save
       structure.total_kept = structure.page_types.reduce((sum, pt) => sum + pt.urls.length, 0);
       writeFileSync(path.join(OUTPUT_DIR, 'structure.json'), JSON.stringify(structure, null, 2), 'utf-8');
@@ -336,13 +438,13 @@ async function phase3Schema(): Promise<void> {
 - If a group has ≤30 pages, read ALL of them
 - If a group has >30 pages, read samples until you stop seeing new sections
 - Create a UNION schema that covers all variations (some pages may have sections others don't)
+- IMPORTANT: The schema must capture EVERYTHING visible on the page — every section, every element, no exceptions. Do NOT selectively pick "main content" and skip the rest. If it's in the HTML, it must be in the schema. This includes but is not limited to: header, navigation, footer, chat widgets, social media links, booking forms, cookie banners, floating buttons, popups, breadcrumbs, sidebar widgets, etc.
 - Use semantic property names: hero_section, navigation, services, testimonials, etc.
 - Capture: text, images (src + alt), links (label + href), forms (fields, labels, types), buttons/CTAs
-- Include header, navigation (full menu hierarchy), and footer sections
 - Use arrays for repeated elements
 
 ## Output
-Write output/schema.json with this format:
+Write ${OUTPUT_DIR}/schema.json with this format:
 {
   "pages": {
     "<pagetype>": {
@@ -357,9 +459,9 @@ Write output/schema.json with this format:
 
 ${typesSummary}
 
-The cleaned HTML for each page is at output/pages/<filename>.html. Use the Read tool to examine pages.
+The cleaned HTML for each page is at ${PAGES_DIR}/<filename>.html. Use the Read tool to examine pages.
 
-Read enough pages per type to capture all variations. Write the result to output/schema.json.`;
+Read enough pages per type to capture all variations. Write the result to ${OUTPUT_DIR}/schema.json.`;
 
   const conversation = query({
     prompt,
@@ -372,6 +474,8 @@ Read enough pages per type to capture all variations. Write the result to output
       cwd: process.cwd(),
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
+      ...(AGENT_MODEL ? { model: AGENT_MODEL } : {}),
+      ...(Object.keys(AGENT_ENV).length > 0 ? { env: { ...process.env, ...AGENT_ENV } } : {}),
     },
   });
 
@@ -392,6 +496,8 @@ Read enough pages per type to capture all variations. Write the result to output
     if (message.type === 'result') {
       clearInterval(heartbeat);
       const resultMsg = message as SDKResultMessage;
+      const usage = resultMsg.usage ?? { input_tokens: 0, output_tokens: 0 };
+      recordPhase('Phase 3: Schema', usage.input_tokens ?? 0, usage.output_tokens ?? 0, Date.now() - startTime);
       if (resultMsg.subtype !== 'success') {
         throw new Error(`Phase 3 failed: ${resultMsg.subtype}`);
       }
@@ -403,7 +509,13 @@ Read enough pages per type to capture all variations. Write the result to output
   const schemaRaw = JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'schema.json'), 'utf-8'));
   // Normalize: agent might write { pages: {...} } or wrap in JSON Schema with { properties: { pages: { properties: {...} } } }
   const schema: SchemaOutput = normalizeSchema(schemaRaw);
-  writeFileSync(path.join(OUTPUT_DIR, 'schema.json'), JSON.stringify(schema, null, 2), 'utf-8');
+  // Resolve $ref/$defs so downstream consumers (Mercury) get flat, self-contained schemas
+  const resolvedSchema: SchemaOutput = {
+    pages: Object.fromEntries(
+      Object.entries(schema.pages).map(([name, s]) => [name, resolveRefs(s)])
+    ),
+  };
+  writeFileSync(path.join(OUTPUT_DIR, 'schema.json'), JSON.stringify(resolvedSchema, null, 2), 'utf-8');
   const typeCount = Object.keys(schema.pages).length;
 
   printPhaseSummary({
@@ -425,7 +537,14 @@ async function phase4Content(websiteUrl: string): Promise<void> {
   }
 
   const structure: SiteStructure = JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'structure.json'), 'utf-8'));
-  const schema: SchemaOutput = normalizeSchema(JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'schema.json'), 'utf-8')));
+  const rawSchema: SchemaOutput = normalizeSchema(JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'schema.json'), 'utf-8')));
+
+  // Resolve $ref/$defs in each page type schema so the model gets flat, self-contained schemas
+  const schema: SchemaOutput = {
+    pages: Object.fromEntries(
+      Object.entries(rawSchema.pages).map(([name, s]) => [name, resolveRefs(s)])
+    ),
+  };
 
   // Build URL → page type mapping
   const urlToType = new Map<string, string>();
@@ -490,8 +609,8 @@ async function phase4Content(websiteUrl: string): Promise<void> {
         let lastError: Error | null = null;
         for (let attempt = 1; attempt <= EXTRACT_RETRIES; attempt++) {
           try {
-            const content = await extractContentFromHtml(html, pageSchema, websiteUrl, page.url);
-            return { url: page.url, pagetype: page.pagetype, content };
+            const result = await extractContentFromHtml(html, pageSchema, websiteUrl, page.url);
+            return { url: page.url, pagetype: page.pagetype, content: result.content, usage: result.usage };
           } catch (error) {
             lastError = error instanceof Error ? error : new Error(String(error));
             if (attempt < EXTRACT_RETRIES) {
@@ -506,8 +625,10 @@ async function phase4Content(websiteUrl: string): Promise<void> {
 
     for (const result of results) {
       if (result.status === 'fulfilled') {
-        const { url, pagetype, content } = result.value;
+        const { url, pagetype, content, usage } = result.value;
         output.page_types[pagetype].entries.push({ url, content });
+        totalInputTokens += usage.input_tokens;
+        totalOutputTokens += usage.output_tokens;
         completed++;
       } else {
         failed++;
@@ -522,6 +643,8 @@ async function phase4Content(websiteUrl: string): Promise<void> {
   writeFileSync(path.join(OUTPUT_DIR, 'content.json'), JSON.stringify(output, null, 2), 'utf-8');
 
   const elapsed = Date.now() - startTime;
+  recordPhase('Phase 4: Content', totalInputTokens, totalOutputTokens, elapsed);
+
   printPhaseSummary({
     'Pages to extract': pagesToExtract.length,
     'Extracted': completed,
@@ -536,13 +659,20 @@ async function main() {
   const websiteUrl = process.argv[2];
   const phaseArg = process.argv.indexOf('--phase');
   const singlePhase = phaseArg !== -1 ? parseInt(process.argv[phaseArg + 1]) : null;
+  const outputArg = process.argv.indexOf('--output');
+  const outputName = outputArg !== -1 ? process.argv[outputArg + 1] : null;
 
   if (!websiteUrl) {
-    console.error('Usage: bun run index.ts <website-url> [--phase N]');
+    console.error('Usage: bun run index.ts <website-url> [--phase N] [--output <name>]');
     console.error('Example: bun run index.ts https://example.com');
     console.error('         bun run index.ts https://example.com --phase 3');
+    console.error('         bun run index.ts https://example.com --output 2026-04-12_14-30-00');
     process.exit(1);
   }
+
+  const timestamp = outputName || new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+  OUTPUT_DIR = path.join('output', timestamp);
+  PAGES_DIR = path.join(OUTPUT_DIR, 'pages');
 
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     console.error('Error: Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in .env');
@@ -554,6 +684,9 @@ async function main() {
   if (singlePhase) console.log(`   Running phase ${singlePhase} only`);
 
   mkdirSync(OUTPUT_DIR, { recursive: true });
+  setPagesDir(PAGES_DIR);
+
+  console.log(`   Output: ${OUTPUT_DIR}`);
 
   const totalStart = Date.now();
 
@@ -564,9 +697,10 @@ async function main() {
 
   console.log(`\n${'━'.repeat(50)}`);
   console.log(`  ✅ All phases complete`);
-  console.log(`  Total time: ${formatTime(Date.now() - totalStart)}`);
   console.log(`  Output: ${OUTPUT_DIR}/`);
-  console.log(`${'━'.repeat(50)}\n`);
+  console.log(`${'━'.repeat(50)}`);
+
+  printTotalSummary(Date.now() - totalStart);
 }
 
 main().catch((err) => {
