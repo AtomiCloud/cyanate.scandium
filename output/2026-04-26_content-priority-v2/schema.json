@@ -1,0 +1,738 @@
+{
+  "pages": {
+    "homepage": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with logo and primary navigation",
+          "_selector": "#site-header",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "sticky_navigation_bar": {
+          "type": "object",
+          "description": "Sticky Elementor navigation bar with language switcher, main menu, and Book Now CTA",
+          "_selector": "#sticky-hero",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Site footer with links, contact info, and social media icons",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "hero_banner": {
+          "type": "object",
+          "description": "Hero banner with 'Royal Healthcare' brand name and 'One Day, One Stop, One Centre' tagline",
+          "_selector": "div.elementor-element-391eaca",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "wellness_approach": {
+          "type": "object",
+          "description": "The Royal Way To Wellness section with One Day One Stop One Centre approach description and CTA link",
+          "_selector": "div.elementor-element-4994b864",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "our_mission": {
+          "type": "object",
+          "description": "Our Mission section with personalized healthcare experience statement and link",
+          "_selector": "div.elementor-element-1054649d",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "services_section": {
+          "type": "object",
+          "description": "What We Do section with service category hover-reveal cards (Specialist Care, Diagnostics, Longevity, Concierge)",
+          "_selector": "div.elementor-element-507727ef",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "meet_our_doctors": {
+          "type": "object",
+          "description": "Meet Our Doctors section with doctor carousel showing profiles with photos, names, and specialties",
+          "_selector": "div.elementor-element-053625f",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "awards_section": {
+          "type": "object",
+          "description": "You Deserve Only The Best awards and accreditation section",
+          "_selector": "div.elementor-element-f397b77",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "news_events_section": {
+          "type": "object",
+          "description": "News and Events section with Latest Happenings carousel of article cards with images, titles, and excerpts",
+          "_selector": "div.elementor-element-5a5470a",
+          "_kind": "section",
+          "_multiple": false
+        }
+      }
+    },
+    "about_us": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with navigation, language switcher, and booking menu",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social media links and contact information",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "page_banner": {
+          "type": "object",
+          "description": "About Us page title and breadcrumb navigation (Home > About Us)",
+          "_selector": "div.elementor-element-5914f269",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "story_commitment_intro": {
+          "type": "object",
+          "description": "Our Story & Commitment introductory section with heading, description text, and image",
+          "_selector": "div.elementor-element-651edc3",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "our_story": {
+          "type": "object",
+          "description": "Our Story narrative section describing the founding and two-decade journey of Royal Healthcare",
+          "_selector": "div.elementor-element-462a237",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "our_commitment": {
+          "type": "object",
+          "description": "Our Commitment section describing dedication to creating a healthcare experience beyond medical excellence",
+          "_selector": "div.elementor-element-8756b9d",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "royal_experience": {
+          "type": "object",
+          "description": "The Royal Experience section with introductory text and four feature highlights: Personalised Care, Comfort-Centred Environment, Seamless Experience, and A Journey Curated for Your Comfort",
+          "_selector": "div.elementor-element-70aebaab",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "awards": {
+          "type": "object",
+          "description": "Awards section with heading and description of recognition received by Royal Healthcare",
+          "_selector": "div.elementor-element-6388b3c0",
+          "_kind": "section",
+          "_multiple": false
+        }
+      }
+    },
+    "meet_our_team": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Site header with logo, language switcher, navigation links, and booking CTA",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Site footer with social media links, contact info, and site navigation",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "page_title_breadcrumb": {
+          "type": "object",
+          "description": "Page title 'Meet Our Team' and breadcrumb trail 'Home > Meet Our Team'",
+          "_selector": "div.elementor-element-70a7bb1",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "doctors_section_heading": {
+          "type": "object",
+          "description": "Section headline 'Meet Our Doctors' with tagline about experienced specialists",
+          "_selector": "div.elementor-element-851c639",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "visiting_consultants": {
+          "type": "object",
+          "description": "Visiting Consultants section with heading and accordion listing 22 specialty groups (Cardiology, Dental, ENT, etc.), each containing doctor profile cards with photos and links",
+          "_selector": "div.elementor-element-1eedbb2",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "residence_doctors": {
+          "type": "object",
+          "description": "Residence Doctors section with heading and accordion listing 3 specialty groups (Cardiology, Internal Medicine, Radiology), each containing doctor profile cards",
+          "_selector": "div.elementor-element-df38ff1",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "leadership_team": {
+          "type": "object",
+          "description": "Leadership team section with 'Meet Our Leadership Team' heading, tagline, and grid of 8 leadership member images",
+          "_selector": "div.elementor-element-b948f30",
+          "_kind": "section",
+          "_multiple": false
+        }
+      }
+    },
+    "our_services": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with navigation, language switcher, and logo",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social media links and footer content",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "services_breadcrumb": {
+          "type": "object",
+          "description": "Page title 'Our Services' and breadcrumb navigation 'Home > Our Services'",
+          "_selector": "div.elementor-element-7e626d92",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "services_intro": {
+          "type": "object",
+          "description": "Services page heading and introduction paragraph describing Royal Healthcare's approach",
+          "_selector": "div.elementor-element-7726056",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "services_card_grid": {
+          "type": "object",
+          "description": "Grid container holding four service category cards: Specialist Care, Diagnostics & Imaging, Longevity & Wellness, Concierge Services",
+          "_selector": "div.elementor-element-1ce4e5d",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "service_card": {
+          "type": "array",
+          "description": "Individual service category card with heading, description, and link (e.g. Specialist Care, Diagnostics & Imaging, Longevity & Wellness, Concierge Services)",
+          "_selector": "div.uc_long_content_box_box",
+          "_kind": "repeated_item",
+          "_multiple": true
+        }
+      }
+    },
+    "our_services_subpage": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with logo, navigation menu, language switcher, and booking button",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social media links, contact info, and legal links",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "hero_banner": {
+          "type": "object",
+          "description": "Hero banner with service tagline heading, descriptive paragraph, and feature image",
+          "_selector": "div.elementor-element-f7927ef",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "services_section": {
+          "type": "object",
+          "description": "Services section containing a section heading (e.g. Core Programmes, What We Offer) and a grid of individual service cards with icons, titles, and descriptions",
+          "_selector": "div.elementor-element-51fc921",
+          "_kind": "section",
+          "_multiple": false
+        }
+      }
+    },
+    "specialist_care": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with navigation, language switcher, and booking menu",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "page_breadcrumb": {
+          "type": "object",
+          "description": "Page title heading and breadcrumb navigation (Specialist Care / Home > Our Services > Specialist Care)",
+          "_selector": "div.elementor-element-5371480a",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "hero_intro": {
+          "type": "object",
+          "description": "Hero banner with intro heading, description of specialist services, and accompanying image",
+          "_selector": "div.elementor-element-f7927ef",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "service_categories": {
+          "type": "object",
+          "description": "Key Sections grid container with heading and four specialist service category cards",
+          "_selector": "div.elementor-element-51fc921",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "service_card_preventive": {
+          "type": "object",
+          "description": "Service card: Preventive screening and chronic disease management with icon and description",
+          "_selector": "div.elementor-element-c54bf2c",
+          "_kind": "repeated_item",
+          "_multiple": false
+        },
+        "service_card_subspecialty": {
+          "type": "object",
+          "description": "Service card: Subspecialty consultation with icon and description",
+          "_selector": "div.elementor-element-42929a2",
+          "_kind": "repeated_item",
+          "_multiple": false
+        },
+        "service_card_surgical": {
+          "type": "object",
+          "description": "Service card: Minimally invasive surgical support with icon and description",
+          "_selector": "div.elementor-element-165f5fc",
+          "_kind": "repeated_item",
+          "_multiple": false
+        },
+        "service_card_recovery": {
+          "type": "object",
+          "description": "Service card: Post-operative recovery and rehabilitation with icon and description",
+          "_selector": "div.elementor-element-626d586",
+          "_kind": "repeated_item",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social media links, contact info, and navigation",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        }
+      }
+    },
+    "diagnostics_imaging": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with navigation, language switcher, and logo",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "page_title_breadcrumb": {
+          "type": "object",
+          "description": "Page title 'Diagnostics & Imaging' and breadcrumb navigation 'Home > Our Services > Diagnostics & Imaging'",
+          "_selector": "div.elementor-element-7956b39f",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "hero_banner": {
+          "type": "object",
+          "description": "Hero section with heading 'Precision imaging. Confident diagnosis.', description of Siemens Healthineers Asia Reference Centre credentials, and supporting image",
+          "_selector": "div.elementor-element-1c12607",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "diagnostics_services": {
+          "type": "object",
+          "description": "Diagnostics services section with heading 'Siemens Healthineers Asia Reference Centre' and six service cards: MAGNETOM Vida 3T MRI, NAEOTOM Alpha CT, Carotid/Echo/General Ultrasound, General X-rays & Mammogram, Treadmill Stress Test, and Bone Mineral Density (BMD)",
+          "_selector": "div.elementor-element-2d505947",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social media links and contact information",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        }
+      }
+    },
+    "patient_journey": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Site header with language switcher, navigation, and logo",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Site footer with social media links and contact information",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "page_title_breadcrumb": {
+          "type": "object",
+          "description": "Page title 'Patient Journey' and breadcrumb navigation 'Home > Patient Journey'",
+          "_selector": "div.elementor-element-70766911",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "welcome_intro": {
+          "type": "object",
+          "description": "Introductory section with welcoming heading and description of the centre environment and facilities",
+          "_selector": "div.elementor-element-c51cfab",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "equipment_carousel": {
+          "type": "object",
+          "description": "Image card carousel showcasing medical equipment and facilities (e.g. MRI scanners, Bone Mine)",
+          "_selector": "#uc_image_card_carousel_elementor_3667334-wrapper",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "carousel_card": {
+          "type": "array",
+          "description": "Individual carousel card with equipment/facility title, image, and link",
+          "_selector": "div.uc_dark_carousel_container_holder",
+          "_kind": "repeated_item",
+          "_multiple": true
+        }
+      }
+    },
+    "news_listing": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header containing logo, language switcher, and navigation",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "page_title_breadcrumb": {
+          "type": "object",
+          "description": "Page title 'News & Events' with breadcrumb navigation 'Home > News & Events'",
+          "_selector": "div.elementor-element-65e72568",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "news_listing_section": {
+          "type": "object",
+          "description": "Main news listing section with heading 'News & Events: Latest Happenings', the 'News' tab, and the grid of news post cards",
+          "_selector": "div.elementor-element-bd0724e",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "news_card": {
+          "type": "array",
+          "description": "Individual news post card in the listing loop, containing date, featured image, title, and excerpt",
+          "_selector": "div.elementor-3768",
+          "_kind": "repeated_item",
+          "_multiple": true
+        },
+        "events_listing_section": {
+          "type": "object",
+          "description": "Events listing section with heading 'Events' and event cards including dates, titles, and images",
+          "_selector": "div.elementor-element-34c3651",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social media links and footer content",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        }
+      }
+    },
+    "events_listing": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Site header with logo, navigation, language switcher, and booking menu",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Site footer with social media links (Facebook, LinkedIn, Instagram) and footer content",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "page_banner": {
+          "type": "object",
+          "description": "Page title 'Events' and breadcrumb navigation 'Home > Events'",
+          "_selector": "div.elementor-element-65e72568",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "events_listing": {
+          "type": "object",
+          "description": "Main events listing section with 'News & Events: Latest Happenings' heading, 'Events' tab, and the event cards grid",
+          "_selector": "div.elementor-element-bd0724e",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "event_card": {
+          "type": "array",
+          "description": "Individual event card with date, featured image, title, and excerpt",
+          "_selector": "div.elementor-3768",
+          "_kind": "repeated_item",
+          "_multiple": true
+        }
+      }
+    },
+    "category_listing": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with logo, language switcher, and navigation links",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social media links (Facebook, LinkedIn, Instagram) and contact info",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "category_breadcrumb": {
+          "type": "object",
+          "description": "Category heading and breadcrumb navigation showing current category title and Home > Category path",
+          "_selector": "div.elementor-element-83506aa",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "listing_grid": {
+          "type": "object",
+          "description": "Grid container holding all category listing cards in an Elementor loop grid layout",
+          "_selector": "div.elementor-loop-container",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "listing_card": {
+          "type": "array",
+          "description": "Individual post card in the category listing showing title and View Profile link, part of the Elementor loop",
+          "_selector": "div.elementor-4181",
+          "_kind": "repeated_item",
+          "_multiple": true
+        }
+      }
+    },
+    "legal_page": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with logo, navigation, language switcher, and booking menu",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social media links and contact information",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "legal_content_tabs": {
+          "type": "object",
+          "description": "Tabbed multilingual legal content container with language switching tabs (English, Mandarin, Bahasa Indonesia) and policy body text across all languages",
+          "_selector": "div.e-n-tabs",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "legal_body_text": {
+          "type": "object",
+          "description": "Main body of the legal document containing all terms, conditions, or policy text with headings, paragraphs, and structured lists",
+          "_selector": "div.terms-wrapper",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "page_title_bar": {
+          "type": "object",
+          "description": "Page title heading and breadcrumb navigation for the legal page (Terms & Conditions)",
+          "_selector": "div.elementor-element-71a55de0",
+          "_kind": "section",
+          "_multiple": false
+        }
+      }
+    },
+    "blog_post": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with logo, navigation, language switcher, and booking menu",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "post_body": {
+          "type": "object",
+          "description": "The main blog post body content rendered by the elementor-widget-theme-post-content widget",
+          "_selector": "div.elementor-element-5b81b35",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "post_navigation": {
+          "type": "object",
+          "description": "Previous and next post links for blog post navigation",
+          "_selector": "div.elementor-post-navigation",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social links and contact information",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        }
+      }
+    },
+    "doctor_profile": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with logo, navigation, language selector, and Book Now menu",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social media links and site information",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "breadcrumb": {
+          "type": "object",
+          "description": "Breadcrumb section with page title 'Meet Our Doctors' and navigation path (Home > Specialty > Doctor Name)",
+          "_selector": "div.elementor-element-edbc131",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "doctor_profile_header": {
+          "type": "object",
+          "description": "Doctor profile header containing name, specialty/role title, and medical qualifications/credentials",
+          "_selector": "div.elementor-element-d70825e",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "doctor_biography": {
+          "type": "object",
+          "description": "Doctor biography and detailed content body, the main post content area with background, experience, and specialties",
+          "_selector": "div.elementor-element-dd58d4e",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "doctor_photo": {
+          "type": "object",
+          "description": "Doctor profile portrait photo",
+          "_selector": "img.attachment-full",
+          "_kind": "section",
+          "_multiple": false
+        }
+      }
+    },
+    "doctor_category": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "site_header": {
+          "type": "object",
+          "description": "Global site header with logo, navigation, language switcher, and booking button",
+          "_selector": "header.elementor-2357",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "site_footer": {
+          "type": "object",
+          "description": "Global site footer with social links, contact info, and copyright",
+          "_selector": "footer.elementor-1761",
+          "_kind": "global",
+          "_multiple": false
+        },
+        "archive_content": {
+          "type": "object",
+          "description": "Main archive content area containing the category title, breadcrumb, and doctor card listing for this doctor category",
+          "_selector": "div.elementor-6718",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "category_header": {
+          "type": "object",
+          "description": "Category title heading and breadcrumb navigation (e.g. 'Home > Dental')",
+          "_selector": "div.elementor-element-83506aa",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "doctor_card_grid": {
+          "type": "object",
+          "description": "Grid container holding all doctor cards for this category",
+          "_selector": "div.elementor-loop-container",
+          "_kind": "section",
+          "_multiple": false
+        },
+        "doctor_card": {
+          "type": "array",
+          "description": "Individual doctor card in the listing, showing doctor name, specialty/role, clinic, and View Profile link",
+          "_selector": "div.elementor-4181",
+          "_kind": "repeated_item",
+          "_multiple": true
+        }
+      }
+    }
+  }
+}
