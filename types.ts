@@ -1,9 +1,45 @@
 // --- Crawler types ---
 
+export interface DomElement {
+  selector: string;
+  tag: string;
+  classes: string[];
+  id: string;
+  depth: number;
+  parentSelector: string | null;
+  ancestorSelectors: string[];
+  textPreview: string;
+  childCount: number;
+  meaningfulChildCount: number;
+  repeatedSiblingCount: number;
+  directTextLength: number;
+  totalTextLength: number;
+  ownLinkCount: number;
+  descendantLinkCount: number;
+  ownImageCount: number;
+  descendantImageCount: number;
+  hasForm: boolean;
+  isSemanticTag: boolean;
+  classTokensNormalized: string[];
+  inMainContent: boolean;
+  inChromeRegion: boolean;
+  containsHeading: boolean;
+}
+
+export interface DomCandidate extends DomElement {
+  score: number;
+  structuralRole: 'section_candidate' | 'repeated_item_candidate' | 'chrome_candidate';
+  likelyRepeated: boolean;
+  likelyWrapper: boolean;
+  rejectionReasons: string[];
+}
+
 export interface CrawlResult {
   url: string;
   html: string;
   links: string[];
+  elements: DomElement[];
+  candidates: DomCandidate[];
 }
 
 export interface CrawlOutput {

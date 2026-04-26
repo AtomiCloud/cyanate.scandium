@@ -4,13 +4,18 @@ import path from 'path';
 import { query, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { crawlSite } from './crawler.js';
 import { savePage, urlToFilename, setPagesDir } from './tools.js';
-import { extractContentFromHtml } from './api.js';
+import { standardizeGlobalNames } from './api.js';
+import { detectGlobalComponents, extractContent, normalizeSchemaState, type SchemaState, type SchemaSection } from './schema-extractor.js';
 import type { SiteStructure, FilteredOutput, SchemaOutput, GroupedContentOutput, PageType } from './types.js';
 
 // --- Config ---
 const CRAWL_CONCURRENCY = parseInt(process.env.CRAWL_CONCURRENCY || '10');
 const EXTRACT_CONCURRENCY = parseInt(process.env.EXTRACT_CONCURRENCY || '5');
 const EXTRACT_RETRIES = 3;
+const SCHEMA_SAMPLE_MIN = parseInt(process.env.SCHEMA_SAMPLE_MIN || '20');
+const SCHEMA_SAMPLE_RATIO = parseFloat(process.env.SCHEMA_SAMPLE_RATIO || '0.6');
+const SCHEMA_BATCH_SIZE = parseInt(process.env.SCHEMA_BATCH_SIZE || '5');
+const SCHEMA_CONCURRENCY = parseInt(process.env.SCHEMA_CONCURRENCY || '3');
 const AGENT_MODEL = process.env.LLM_MODEL || undefined;
 const AGENT_ENV: Record<string, string> = {};
 if (process.env.ANTHROPIC_BASE_URL) AGENT_ENV.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL;
@@ -154,13 +159,22 @@ async function phase1Crawl(websiteUrl: string): Promise<void> {
 
   const results = await crawlSite(websiteUrl, { concurrency: CRAWL_CONCURRENCY });
 
+  const elementsDir = path.join(OUTPUT_DIR, 'elements');
+  const candidatesDir = path.join(OUTPUT_DIR, 'candidates');
+  mkdirSync(elementsDir, { recursive: true });
+  mkdirSync(candidatesDir, { recursive: true });
+
   for (const result of results) {
     savePage(result.url, result.html);
+    const baseFile = urlToFilename(result.url).replace('.html', '.json');
+    writeFileSync(path.join(elementsDir, baseFile), JSON.stringify(result.elements, null, 2), 'utf-8');
+    writeFileSync(path.join(candidatesDir, baseFile), JSON.stringify(result.candidates, null, 2), 'utf-8');
   }
 
   const elapsed = Date.now() - startTime;
   printPhaseSummary({
     'Pages crawled': results.length,
+    'Candidate files': results.length,
     'Tokens': 0,
     'Time': formatTime(elapsed),
     'Saved to': PAGES_DIR,
@@ -415,8 +429,8 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
   }
 }
 
-// --- Phase 3: Schema Generation (Agent) ---
-async function phase3Schema(): Promise<void> {
+// --- Phase 3: Schema Generation (Agent SDK + programmatic) ---
+async function phase3Schema(websiteUrl: string): Promise<void> {
   printPhaseHeader(3, 'Schema Generation');
   const startTime = Date.now();
 
@@ -426,42 +440,291 @@ async function phase3Schema(): Promise<void> {
   }
 
   const structure: SiteStructure = JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'structure.json'), 'utf-8'));
+  const allFiles = readdirSync(PAGES_DIR).filter(f => f.endsWith('.html'));
+  const fileSet = new Set(allFiles);
 
-  const typesSummary = structure.page_types.map(pt =>
-    `- ${pt.name} (${pt.urls.length} pages, pattern: ${pt.url_pattern})\n  Samples: ${pt.sample_urls.join(', ')}\n  All URLs: ${pt.urls.join(', ')}`
-  ).join('\n');
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
-  const systemPrompt = `You are a JSON Schema designer. Your job is to create a comprehensive union JSON Schema (draft-07) for each page type of a website.
+  // --- Step 3a: LLM identifies sections per page type (Agent SDK) ---
+  console.log('  Step 3a: Identifying sections per page type...');
 
-## Rules
-- For each page type, read enough sample pages to capture ALL section variations
-- If a group has ≤30 pages, read ALL of them
-- If a group has >30 pages, read samples until you stop seeing new sections
-- Create a UNION schema that covers all variations (some pages may have sections others don't)
-- IMPORTANT: The schema must capture EVERYTHING visible on the page — every section, every element, no exceptions. Do NOT selectively pick "main content" and skip the rest. If it's in the HTML, it must be in the schema. This includes but is not limited to: header, navigation, footer, chat widgets, social media links, booking forms, cookie banners, floating buttons, popups, breadcrumbs, sidebar widgets, etc.
-- Use semantic property names: hero_section, navigation, services, testimonials, etc.
-- Capture: text, images (src + alt), links (label + href), forms (fields, labels, types), buttons/CTAs
-- Use arrays for repeated elements
+  const schemaStates: Record<string, SchemaState> = {};
 
-## Output
-Write ${OUTPUT_DIR}/schema.json with this format:
-{
-  "pages": {
-    "<pagetype>": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "type": "object",
-      "properties": { ... }
+  // Build file lists per page type
+  const pageTypeFiles: Array<{ name: string; files: string[] }> = [];
+  for (const pt of structure.page_types) {
+    const files: string[] = [];
+    for (const url of pt.urls) {
+      const candidates = [
+        urlToFilename(websiteUrl.replace(/\/$/, '') + url),
+        urlToFilename(url),
+        urlToFilename(websiteUrl + url.replace(/^\//, '')),
+      ];
+      const match = candidates.find(f => fileSet.has(f));
+      if (match) files.push(path.join(PAGES_DIR, match));
+    }
+
+    // Sampling: use all pages if ≤ SCHEMA_SAMPLE_MIN, otherwise use SCHEMA_SAMPLE_RATIO
+    let sampled: string[];
+    if (files.length <= SCHEMA_SAMPLE_MIN) {
+      sampled = files;
+    } else {
+      const count = Math.ceil(files.length * SCHEMA_SAMPLE_RATIO);
+      // Shuffle and take count
+      const shuffled = [...files].sort(() => Math.random() - 0.5);
+      sampled = shuffled.slice(0, count);
+    }
+
+    if (sampled.length > 0) {
+      pageTypeFiles.push({ name: pt.name, files: sampled });
+      console.log(`    ${pt.name}: ${sampled.length}/${files.length} pages to analyze`);
     }
   }
-}`;
 
-  const prompt = `Generate JSON Schemas for these page types:
+  // Run agent sessions in parallel (SCHEMA_CONCURRENCY at a time)
+  for (let i = 0; i < pageTypeFiles.length; i += SCHEMA_CONCURRENCY) {
+    const batch = pageTypeFiles.slice(i, i + SCHEMA_CONCURRENCY);
 
-${typesSummary}
+    const results = await Promise.allSettled(
+      batch.map(pt => runSchemaAgent(pt.name, pt.files))
+    );
 
-The cleaned HTML for each page is at ${PAGES_DIR}/<filename>.html. Use the Read tool to examine pages.
+    for (let j = 0; j < results.length; j++) {
+      const result = results[j];
+      const ptName = batch[j].name;
+      if (result.status === 'fulfilled') {
+        validateSchemaState(ptName, result.value.state);
+        schemaStates[ptName] = result.value.state;
+        totalInputTokens += result.value.usage.input_tokens;
+        totalOutputTokens += result.value.usage.output_tokens;
+        console.log(`    ✓ ${ptName}: ${result.value.state.sections.length} sections found (${result.value.usage.input_tokens + result.value.usage.output_tokens} tokens)`);
+      } else {
+        console.error(`    ✗ ${ptName}: ${result.reason}`);
+      }
+    }
+  }
 
-Read enough pages per type to capture all variations. Write the result to ${OUTPUT_DIR}/schema.json.`;
+  // Read back all schema state files from disk (catches agents that wrote files but whose promise rejected)
+  for (const pt of pageTypeFiles) {
+    if (schemaStates[pt.name]) continue; // already captured from promise
+    const stateFile = path.join(OUTPUT_DIR, `schema-state-${pt.name}.json`);
+    if (existsSync(stateFile)) {
+      const recovered = JSON.parse(readFileSync(stateFile, 'utf-8')) as SchemaState;
+      try {
+        validateSchemaState(pt.name, recovered);
+        schemaStates[pt.name] = recovered;
+        console.log(`    ✓ ${pt.name}: ${schemaStates[pt.name].sections.length} sections (recovered from disk)`);
+      } catch (error) {
+        console.error(`    ✗ ${pt.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+  console.log(`  Step 3a complete: ${Object.keys(schemaStates).length} page types`);
+
+  // --- Step 3b: Detect global components (programmatic) ---
+  console.log('  Step 3b: Detecting global components...');
+  const globals = detectGlobalComponents(schemaStates);
+
+  for (const g of globals) {
+    console.log(`    Global: ${g.selector} (${g.count}/${g.total} page types)`);
+  }
+  console.log(`  Step 3b complete: ${globals.length} global components`);
+
+  // --- Step 3c: Standardize global names (LLM API call) ---
+  if (globals.length > 0) {
+    console.log('  Step 3c: Standardizing global component names...');
+
+    const globalSelectors = globals.map(g => g.selector);
+
+    // Build per-type mappings from schema states (selector → name)
+    const perTypeMappings: Record<string, Record<string, string>> = {};
+    for (const [ptName, state] of Object.entries(schemaStates)) {
+      perTypeMappings[ptName] = {};
+      for (const section of state.sections) {
+        perTypeMappings[ptName][section.selector] = section.name;
+      }
+    }
+
+    const standardResult = await standardizeGlobalNames(perTypeMappings, globalSelectors);
+    totalInputTokens += standardResult.usage.input_tokens;
+    totalOutputTokens += standardResult.usage.output_tokens;
+
+    // Apply standardized names back to schema states
+    for (const [selector, canonicalName] of Object.entries(standardResult.mapping)) {
+      for (const state of Object.values(schemaStates)) {
+        for (const section of state.sections) {
+          if (section.selector === selector) {
+            section.name = canonicalName;
+          }
+        }
+      }
+    }
+
+    console.log(`  Step 3c complete: ${Object.keys(standardResult.mapping).length} keys standardized`);
+  } else {
+    console.log('  Step 3c: No global components to standardize');
+  }
+
+  // --- Step 3d: Generate schema.json (programmatic) ---
+  console.log('  Step 3d: Generating final schema...');
+  const schemaOutput: SchemaOutput = { pages: {} };
+
+  for (const [ptName, state] of Object.entries(schemaStates)) {
+    const properties: Record<string, unknown> = {};
+
+    for (const section of state.sections) {
+      properties[section.name] = {
+        type: section.multiple ? 'array' : 'object',
+        description: section.description,
+        _selector: section.selector,
+        _kind: section.kind,
+        _multiple: section.multiple,
+      };
+    }
+
+    schemaOutput.pages[ptName] = {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties,
+    };
+  }
+
+  writeFileSync(path.join(OUTPUT_DIR, 'schema.json'), JSON.stringify(schemaOutput, null, 2), 'utf-8');
+
+  const elapsed = Date.now() - startTime;
+  recordPhase('Phase 3: Schema', totalInputTokens, totalOutputTokens, elapsed);
+
+  printPhaseSummary({
+    'Page types': Object.keys(schemaStates).length,
+    'Global components': globals.length,
+    'Time': formatTime(elapsed),
+  });
+}
+
+interface SchemaAgentResult {
+  state: SchemaState;
+  usage: { input_tokens: number; output_tokens: number };
+}
+
+function validateSchemaState(pageType: string, state: SchemaState): void {
+  const nonGlobal = state.sections.filter(s => s.kind !== 'global');
+  if (nonGlobal.length === 0) {
+    throw new Error(`Schema agent produced only global sections for ${pageType}`);
+  }
+}
+
+function compactCandidateFiles(pageType: string, candidateFiles: string[]): string[] {
+  const compactDir = path.join(OUTPUT_DIR, 'candidates-compact');
+  mkdirSync(compactDir, { recursive: true });
+
+  return candidateFiles.map((file, idx) => {
+    const raw = JSON.parse(readFileSync(file, 'utf-8')) as Array<Record<string, unknown>>;
+    const compact = raw
+      .slice(0, 40)
+      .map((candidate) => ({
+        selector: candidate.selector,
+        tag: candidate.tag,
+        parentSelector: candidate.parentSelector,
+        depth: candidate.depth,
+        score: candidate.score,
+        structuralRole: candidate.structuralRole,
+        repeatedSiblingCount: candidate.repeatedSiblingCount,
+        meaningfulChildCount: candidate.meaningfulChildCount,
+        totalTextLength: candidate.totalTextLength,
+        directTextLength: candidate.directTextLength,
+        ownImageCount: candidate.ownImageCount,
+        descendantImageCount: candidate.descendantImageCount,
+        descendantLinkCount: candidate.descendantLinkCount,
+        containsHeading: candidate.containsHeading,
+        inMainContent: candidate.inMainContent,
+        inChromeRegion: candidate.inChromeRegion,
+        classTokensNormalized: candidate.classTokensNormalized,
+        textPreview: candidate.textPreview,
+      }));
+
+    const compactFile = path.join(compactDir, `${pageType}-${idx + 1}.json`);
+    writeFileSync(compactFile, JSON.stringify(compact, null, 2), 'utf-8');
+    return compactFile;
+  });
+}
+
+/** Run one Agent SDK session to identify sections for a page type */
+async function runSchemaAgent(pageType: string, files: string[]): Promise<SchemaAgentResult> {
+  const stateFile = path.join(OUTPUT_DIR, `schema-state-${pageType}.json`);
+
+  // Convert HTML file paths to reduced candidate JSON file paths
+  const candidatesDir = path.join(OUTPUT_DIR, 'candidates');
+  const candidateFiles = files.map(f => {
+    const base = path.basename(f).replace('.html', '.json');
+    return path.join(candidatesDir, base);
+  }).filter(f => existsSync(f));
+
+  const compactCandidatePaths = compactCandidateFiles(pageType, candidateFiles);
+  const fileList = compactCandidatePaths.map((f, i) => `${i + 1}. ${f}`).join('\n');
+
+  const systemPrompt = `You are a web page structure analyzer. You will read JSON files containing REDUCED candidate elements extracted from web pages. Each candidate already survived generic pruning. Each record has a verified CSS selector plus structural signals such as parentSelector, repeatedSiblingCount, directTextLength, totalTextLength, meaningfulChildCount, and structuralRole.
+
+Your job is to identify which candidates are MEANINGFUL CONTENT SECTIONS for a CMS template.
+
+## What is a meaningful section?
+- A self-contained component: header, navigation, hero banner, content area, card grid, article body, profile, form, footer, chat widget, popup
+- Represents a distinct part of the page that a CMS template or content model would need
+- Can be either a single section or a repeated item selector
+
+## How to use the signals
+- "directTextLength" low + "totalTextLength" high + one meaningful child usually means wrapper
+- "repeatedSiblingCount >= 2" often means repeated items or list entries
+- "structuralRole = chrome_candidate" often means global UI like header/footer/nav
+- Prefer the best semantic boundary, not the broadest ancestor and not the tiniest leaf
+
+## Classification rules
+- Use kind = "global" for shared chrome such as site_header, main_navigation, site_footer
+- Use kind = "repeated_item" when the selector should match multiple peer entries such as cards, team members, news cards, FAQ items
+- Use kind = "section" for normal one-off page sections
+- Set multiple = true only when the selector should intentionally extract an array of matches
+- Keep the selectors exactly as given
+- Every page type must include at least one NON-GLOBAL page-specific content section or repeated-item selector. Globals alone are never enough.
+
+## IMPORTANT
+- Do not output wrappers that just contain the real section
+- Do not miss the main page content while capturing chrome
+- Do not invent selectors or rename selectors
+- Prefer stable reusable sections over one-off formatting leaves
+- Strongly prefer candidates inside main content over booking menus, popup widgets, datepickers, nav menus, and floating UI
+- Ignore flatpickr calendars, popup internals, menu internals, and duplicated navigation leaves unless the page type is literally a navigation/listing component
+
+## Output format
+Write the state file with this JSON format:
+{
+  "sections": [
+    {
+      "selector": "<exact selector from the candidate>",
+      "name": "readable_name",
+      "description": "what this section contains",
+      "kind": "section | repeated_item | global",
+      "multiple": false
+    }
+  ]
+}
+
+## Process
+1. Read candidate files in batches of ${SCHEMA_BATCH_SIZE}
+2. After each batch, read the current state file (if it exists) and add any NEW sections you find
+3. Never remove existing sections — only add new ones
+4. Write the updated state file after each batch`;
+
+  const prompt = `Analyze the reduced DOM candidates for page type "${pageType}".
+
+Here are the candidate files to read (${compactCandidatePaths.length} pages):
+
+${fileList}
+
+Each file contains a reduced array of candidate elements with verified CSS selectors and structural metadata. Pick the meaningful sections and repeated item selectors.
+
+Read them in batches of ${SCHEMA_BATCH_SIZE}. After each batch, update the state file at: ${stateFile}
+
+Start by reading the first ${Math.min(SCHEMA_BATCH_SIZE, compactCandidatePaths.length)} files.`;
 
   const conversation = query({
     prompt,
@@ -470,7 +733,7 @@ Read enough pages per type to capture all variations. Write the result to ${OUTP
       systemPrompt,
       tools: ['Read', 'Write', 'Glob'],
       allowedTools: ['Read', 'Write', 'Glob'],
-      maxTurns: 100,
+      maxTurns: Math.ceil(files.length / SCHEMA_BATCH_SIZE) * 20 + 50,
       cwd: process.cwd(),
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
@@ -479,54 +742,34 @@ Read enough pages per type to capture all variations. Write the result to ${OUTP
     },
   });
 
-  let turns = 0;
-  const heartbeat = setInterval(() => {
-    console.log(`  ⏳ Still working... (${formatTime(Date.now() - startTime)})`);
-  }, 30000);
+  let agentUsage = { input_tokens: 0, output_tokens: 0 };
 
   for await (const message of conversation) {
-    if (message.type === 'assistant') {
-      turns++;
-      for (const block of message.message.content) {
-        if (block.type === 'tool_use') {
-          console.log(`  🔧 ${block.name} ${typeof block.input === 'object' ? JSON.stringify(block.input).substring(0, 80) : ''}`);
-        }
-      }
-    }
     if (message.type === 'result') {
-      clearInterval(heartbeat);
       const resultMsg = message as SDKResultMessage;
       const usage = resultMsg.usage ?? { input_tokens: 0, output_tokens: 0 };
-      recordPhase('Phase 3: Schema', usage.input_tokens ?? 0, usage.output_tokens ?? 0, Date.now() - startTime);
+      agentUsage = { input_tokens: usage.input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0 };
       if (resultMsg.subtype !== 'success') {
-        throw new Error(`Phase 3 failed: ${resultMsg.subtype}`);
+        throw new Error(`Schema agent failed for ${pageType}: ${resultMsg.subtype}`);
       }
     }
   }
-  clearInterval(heartbeat);
 
-  const elapsed = Date.now() - startTime;
-  const schemaRaw = JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'schema.json'), 'utf-8'));
-  // Normalize: agent might write { pages: {...} } or wrap in JSON Schema with { properties: { pages: { properties: {...} } } }
-  const schema: SchemaOutput = normalizeSchema(schemaRaw);
-  // Resolve $ref/$defs so downstream consumers (Mercury) get flat, self-contained schemas
-  const resolvedSchema: SchemaOutput = {
-    pages: Object.fromEntries(
-      Object.entries(schema.pages).map(([name, s]) => [name, resolveRefs(s)])
-    ),
+  // Read the final state file
+  if (!existsSync(stateFile)) {
+    throw new Error(`Schema agent did not create state file for ${pageType}`);
+  }
+
+  const state = normalizeSchemaState(JSON.parse(readFileSync(stateFile, 'utf-8')) as SchemaState);
+  validateSchemaState(pageType, state);
+
+  return {
+    state,
+    usage: agentUsage,
   };
-  writeFileSync(path.join(OUTPUT_DIR, 'schema.json'), JSON.stringify(resolvedSchema, null, 2), 'utf-8');
-  const typeCount = Object.keys(schema.pages).length;
-
-  printPhaseSummary({
-    'Page types': structure.page_types.length,
-    'Schemas generated': typeCount,
-    'Turns': turns,
-    'Time': formatTime(elapsed),
-  });
 }
 
-// --- Phase 4: Content Extraction (Programmatic) ---
+// --- Phase 4: Content Extraction (Programmatic — no LLM) ---
 async function phase4Content(websiteUrl: string): Promise<void> {
   printPhaseHeader(4, 'Content Extraction');
   const startTime = Date.now();
@@ -537,21 +780,22 @@ async function phase4Content(websiteUrl: string): Promise<void> {
   }
 
   const structure: SiteStructure = JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'structure.json'), 'utf-8'));
-  const rawSchema: SchemaOutput = normalizeSchema(JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'schema.json'), 'utf-8')));
+  const schema: SchemaOutput = JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'schema.json'), 'utf-8'));
 
-  // Resolve $ref/$defs in each page type schema so the model gets flat, self-contained schemas
-  const schema: SchemaOutput = {
-    pages: Object.fromEntries(
-      Object.entries(rawSchema.pages).map(([name, s]) => [name, resolveRefs(s)])
-    ),
-  };
-
-  // Build URL → page type mapping
-  const urlToType = new Map<string, string>();
-  for (const pt of structure.page_types) {
-    for (const url of pt.urls) {
-      urlToType.set(url, pt.name);
+  // Build section lookup per page type (name → selector from schema)
+  const sectionsByType = new Map<string, SchemaSection[]>();
+  for (const [ptName, ptSchema] of Object.entries(schema.pages)) {
+    const sections: SchemaSection[] = [];
+    for (const [name, prop] of Object.entries(ptSchema.properties as Record<string, any>)) {
+      sections.push({
+        selector: prop._selector || '',
+        name,
+        description: prop.description || '',
+        kind: prop._kind || 'section',
+        multiple: Boolean(prop._multiple),
+      });
     }
+    sectionsByType.set(ptName, sections);
   }
 
   // Build a map of all HTML files on disk for fast lookup
@@ -562,13 +806,11 @@ async function phase4Content(websiteUrl: string): Promise<void> {
   const pagesToExtract: Array<{ url: string; pagetype: string; file: string }> = [];
   for (const pt of structure.page_types) {
     for (const url of pt.urls) {
-      // Try multiple filename derivations
       const candidates = [
         urlToFilename(websiteUrl.replace(/\/$/, '') + url),
         urlToFilename(url),
         urlToFilename(websiteUrl + url.replace(/^\//, '')),
       ];
-
       const match = candidates.find(f => fileSet.has(f));
       if (match) {
         pagesToExtract.push({ url, pagetype: pt.name, file: path.join(PAGES_DIR, match) });
@@ -580,76 +822,49 @@ async function phase4Content(websiteUrl: string): Promise<void> {
 
   console.log(`  Pages to extract: ${pagesToExtract.length}`);
 
-  // Extract in parallel with concurrency limit
   const output: GroupedContentOutput = { page_types: {} };
   let completed = 0;
   let failed = 0;
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
 
   // Initialize page_types
   for (const pt of structure.page_types) {
     output.page_types[pt.name] = { entries: [] };
   }
 
-  // Process in batches
-  for (let i = 0; i < pagesToExtract.length; i += EXTRACT_CONCURRENCY) {
-    const batch = pagesToExtract.slice(i, i + EXTRACT_CONCURRENCY);
+  // Extract content programmatically — no LLM
+  for (const page of pagesToExtract) {
+    try {
+      const html = readFileSync(page.file, 'utf-8');
+      const sections = sectionsByType.get(page.pagetype);
 
-    const results = await Promise.allSettled(
-      batch.map(async (page) => {
-        const html = readFileSync(page.file, 'utf-8');
-        const pageSchema = schema.pages[page.pagetype];
-
-        if (!pageSchema) {
-          throw new Error(`No schema for type: ${page.pagetype}`);
-        }
-
-        // Retry logic
-        let lastError: Error | null = null;
-        for (let attempt = 1; attempt <= EXTRACT_RETRIES; attempt++) {
-          try {
-            const result = await extractContentFromHtml(html, pageSchema, websiteUrl, page.url);
-            return { url: page.url, pagetype: page.pagetype, content: result.content, usage: result.usage };
-          } catch (error) {
-            lastError = error instanceof Error ? error : new Error(String(error));
-            if (attempt < EXTRACT_RETRIES) {
-              const delay = attempt * 2000;
-              await new Promise((r) => setTimeout(r, delay));
-            }
-          }
-        }
-        throw lastError;
-      })
-    );
-
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        const { url, pagetype, content, usage } = result.value;
-        output.page_types[pagetype].entries.push({ url, content });
-        totalInputTokens += usage.input_tokens;
-        totalOutputTokens += usage.output_tokens;
-        completed++;
-      } else {
-        failed++;
-        console.error(`  ✗ ${result.reason}`);
+      if (!sections || sections.length === 0) {
+        throw new Error(`No schema sections for type: ${page.pagetype}`);
       }
+
+      const content = extractContent(html, sections, websiteUrl);
+      output.page_types[page.pagetype].entries.push({ url: page.url, content });
+      completed++;
+    } catch (error) {
+      failed++;
+      console.error(`  ✗ ${page.url}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    console.log(`  Progress: ${completed + failed}/${pagesToExtract.length} (${failed} failed)`);
+    if ((completed + failed) % 20 === 0 || completed + failed === pagesToExtract.length) {
+      console.log(`  Progress: ${completed + failed}/${pagesToExtract.length} (${failed} failed)`);
+    }
   }
 
   // Write output
   writeFileSync(path.join(OUTPUT_DIR, 'content.json'), JSON.stringify(output, null, 2), 'utf-8');
 
   const elapsed = Date.now() - startTime;
-  recordPhase('Phase 4: Content', totalInputTokens, totalOutputTokens, elapsed);
+  recordPhase('Phase 4: Content', 0, 0, elapsed);
 
   printPhaseSummary({
     'Pages to extract': pagesToExtract.length,
     'Extracted': completed,
     'Failed': failed,
-    'API calls': completed + failed,
+    'LLM calls': 0,
     'Time': formatTime(elapsed),
   });
 }
@@ -692,7 +907,7 @@ async function main() {
 
   if (!singlePhase || singlePhase === 1) await phase1Crawl(websiteUrl);
   if (!singlePhase || singlePhase === 2) await phase2Structure(websiteUrl);
-  if (!singlePhase || singlePhase === 3) await phase3Schema();
+  if (!singlePhase || singlePhase === 3) await phase3Schema(websiteUrl);
   if (!singlePhase || singlePhase === 4) await phase4Content(websiteUrl);
 
   console.log(`\n${'━'.repeat(50)}`);

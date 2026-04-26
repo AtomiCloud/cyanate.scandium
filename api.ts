@@ -130,3 +130,142 @@ ${html}`;
     },
   };
 }
+
+// --- Key Naming (Step 3b) ---
+
+export interface KeyNamingResult {
+  mapping: Record<string, string>;
+  usage: { input_tokens: number; output_tokens: number };
+}
+
+/**
+ * Ask LLM to map raw class/ID keys to human-readable schema keys.
+ * One call per page type.
+ */
+export async function nameKeys(
+  pageType: string,
+  sections: Array<{ key: string; tag: string; sampleHtml: string }>
+): Promise<KeyNamingResult> {
+  const sectionList = sections.map((s, i) =>
+    `${i + 1}. key="${s.key}" (tag: <${s.tag}>)\n   HTML snippet:\n   ${s.sampleHtml.substring(0, 300)}`
+  ).join('\n\n');
+
+  const prompt = `You are naming sections of a webpage for a CMS schema.
+
+Page type: "${pageType}"
+
+Below are HTML sections found on this page type. Each has a raw key (from CSS class or ID) and a sample HTML snippet.
+
+Give each section a human-readable, semantic key name in snake_case. The name should describe what the section IS (e.g. "site_header", "hero_banner", "article_content", "whatsapp_chat"), not what it looks like.
+
+Rules:
+- Use snake_case
+- Be descriptive but concise (1-3 words)
+- Names should be meaningful to a web developer building a CMS template
+- Output ONLY valid JSON: a mapping from raw key to readable name
+
+Sections:
+
+${sectionList}
+
+Output format:
+{
+  "raw_key_1": "readable_name_1",
+  "raw_key_2": "readable_name_2"
+}`;
+
+  const anthropic = getClient();
+  const stream = anthropic.messages.stream({
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const response = await stream.finalMessage();
+
+  const text = response.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
+
+  const jsonText = extractJSON(text);
+  const mapping = JSON.parse(jsonText) as Record<string, string>;
+
+  return {
+    mapping,
+    usage: {
+      input_tokens: response.usage?.input_tokens ?? 0,
+      output_tokens: response.usage?.output_tokens ?? 0,
+    },
+  };
+}
+
+// --- Global Name Standardization (Step 3d) ---
+
+export interface StandardizeResult {
+  mapping: Record<string, string>;
+  usage: { input_tokens: number; output_tokens: number };
+}
+
+/**
+ * Ask LLM to standardize key names for global components across page types.
+ * Ensures the same raw key gets the same readable name everywhere.
+ */
+export async function standardizeGlobalNames(
+  perTypeMapping: Record<string, Record<string, string>>,
+  globalKeys: string[]
+): Promise<StandardizeResult> {
+  // Show what each page type currently calls each global component
+  const lines: string[] = [];
+  for (const rawKey of globalKeys) {
+    const names: string[] = [];
+    for (const [pageType, mapping] of Object.entries(perTypeMapping)) {
+      if (mapping[rawKey]) {
+        names.push(`${pageType}: "${mapping[rawKey]}"`);
+      }
+    }
+    lines.push(`Raw key "${rawKey}" is currently named:\n  ${names.join('\n  ')}`);
+  }
+
+  const prompt = `You are standardizing key names for shared website components.
+
+These components appear across multiple page types of the same website. Each page type may have given them a different readable name. Pick ONE canonical name for each that should be used everywhere.
+
+Rules:
+- Use snake_case
+- Pick the most descriptive and common name
+- Output ONLY valid JSON: a mapping from raw key to the canonical readable name
+
+Components to standardize:
+
+${lines.join('\n\n')}
+
+Output format:
+{
+  "raw_key_1": "canonical_name",
+  "raw_key_2": "canonical_name"
+}`;
+
+  const anthropic = getClient();
+  const stream = anthropic.messages.stream({
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const response = await stream.finalMessage();
+
+  const text = response.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
+
+  const jsonText = extractJSON(text);
+  const mapping = JSON.parse(jsonText) as Record<string, string>;
+
+  return {
+    mapping,
+    usage: {
+      input_tokens: response.usage?.input_tokens ?? 0,
+      output_tokens: response.usage?.output_tokens ?? 0,
+    },
+  };
+}
