@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+.pre-commit-config.yaml
 node_modules/
 output/
 dist/

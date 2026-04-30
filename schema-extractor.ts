@@ -59,7 +59,11 @@ const GENERIC_LAYOUT_TOKENS = new Set([
  * Extract content from HTML using CSS selectors from the schema.
  * For each selector, extracts all text, images, links, and forms within.
  */
-export function extractContent(html: string, sections: SchemaSection[], baseUrl: string): Record<string, unknown> {
+export function extractContent(
+  html: string,
+  sections: SchemaSection[],
+  baseUrl: string,
+): Record<string, unknown> {
   const $ = cheerio.load(html);
   const content: Record<string, unknown> = {};
 
@@ -77,7 +81,12 @@ export function extractContent(html: string, sections: SchemaSection[], baseUrl:
       continue;
     }
 
-    content[section.name] = extractElementContent($matches.first(), $, baseUrl, section);
+    content[section.name] = extractElementContent(
+      $matches.first(),
+      $,
+      baseUrl,
+      section,
+    );
   }
 
   return content;
@@ -87,7 +96,7 @@ function extractElementContent(
   $el: cheerio.Cheerio<AnyNode>,
   $: cheerio.CheerioAPI,
   baseUrl: string,
-  section?: SchemaSection
+  section?: SchemaSection,
 ): unknown {
   const result: Record<string, unknown> = {};
   const scoped = section?.kind === 'global' ? trimGlobalElement($el, $) : $el;
@@ -99,39 +108,48 @@ function extractElementContent(
   }
 
   // Extract images
-  const images = scoped.find('img').map((_, img) => {
-    const $img = $(img);
-    const src = $img.attr('src') || '';
-    return {
-      src: resolveUrl(src, baseUrl),
-      alt: $img.attr('alt') || '',
-    };
-  }).get();
+  const images = scoped
+    .find('img')
+    .map((_, img) => {
+      const $img = $(img);
+      const src = $img.attr('src') || '';
+      return {
+        src: resolveUrl(src, baseUrl),
+        alt: $img.attr('alt') || '',
+      };
+    })
+    .get();
   if (images.length > 0) {
     result.images = images;
   }
 
   // Extract links
-  const links = scoped.find('a[href]').map((_, a) => {
-    const $a = $(a);
-    return {
-      href: resolveUrl($a.attr('href') || '', baseUrl),
-      text: $a.text().trim(),
-    };
-  }).get();
+  const links = scoped
+    .find('a[href]')
+    .map((_, a) => {
+      const $a = $(a);
+      return {
+        href: resolveUrl($a.attr('href') || '', baseUrl),
+        text: $a.text().trim(),
+      };
+    })
+    .get();
   if (links.length > 0) {
     result.links = links;
   }
 
   // Extract form fields
-  const formFields = scoped.find('input, select, textarea').map((_, field) => {
-    const $field = $(field);
-    return {
-      type: $field.attr('type') || $field.prop('tagName')?.toLowerCase(),
-      name: $field.attr('name') || '',
-      placeholder: $field.attr('placeholder') || '',
-    };
-  }).get();
+  const formFields = scoped
+    .find('input, select, textarea')
+    .map((_, field) => {
+      const $field = $(field);
+      return {
+        type: $field.attr('type') || $field.prop('tagName')?.toLowerCase(),
+        name: $field.attr('name') || '',
+        placeholder: $field.attr('placeholder') || '',
+      };
+    })
+    .get();
   if (formFields.length > 0) {
     result.form_fields = formFields;
   }
@@ -141,15 +159,24 @@ function extractElementContent(
 
 function trimGlobalElement(
   $el: cheerio.Cheerio<AnyNode>,
-  $: cheerio.CheerioAPI
+  _$: cheerio.CheerioAPI,
 ): cheerio.Cheerio<AnyNode> {
   const clone = $el.clone();
-  clone.find('form, .e-n-menu-content, .elementor-form, .flatpickr-calendar, [role="dialog"], .wa__popup_chat_box').remove();
+  clone
+    .find(
+      'form, .e-n-menu-content, .elementor-form, .flatpickr-calendar, [role="dialog"], .wa__popup_chat_box',
+    )
+    .remove();
   return clone;
 }
 
 function resolveUrl(url: string, baseUrl: string): string {
-  if (!url || url.startsWith('data:') || url.startsWith('#') || url.startsWith('javascript:')) {
+  if (
+    !url ||
+    url.startsWith('data:') ||
+    url.startsWith('#') ||
+    url.startsWith('javascript:')
+  ) {
     return url;
   }
   try {
@@ -164,7 +191,9 @@ function resolveUrl(url: string, baseUrl: string): string {
 /**
  * Detect selectors that appear across most page types.
  */
-export function detectGlobalComponents(schemaStates: Record<string, SchemaState>): GlobalComponent[] {
+export function detectGlobalComponents(
+  schemaStates: Record<string, SchemaState>,
+): GlobalComponent[] {
   const selectorCounts = new Map<string, number>();
   const total = Object.keys(schemaStates).length;
 
@@ -173,7 +202,10 @@ export function detectGlobalComponents(schemaStates: Record<string, SchemaState>
     for (const section of state.sections) {
       if (!seen.has(section.selector)) {
         seen.add(section.selector);
-        selectorCounts.set(section.selector, (selectorCounts.get(section.selector) || 0) + 1);
+        selectorCounts.set(
+          section.selector,
+          (selectorCounts.get(section.selector) || 0) + 1,
+        );
       }
     }
   }
@@ -197,87 +229,228 @@ export function reduceDomCandidates(elements: DomElement[]): DomCandidate[] {
   return deduped.sort((a, b) => b.score - a.score || a.depth - b.depth);
 }
 
-function scoreElementCandidate(element: DomElement): DomCandidate {
-  let score = 0;
-  const rejectionReasons: string[] = [];
-  const hasOwnContent = element.directTextLength >= 30 || element.ownImageCount > 0 || element.hasForm;
-  const hasDescendantContent = element.totalTextLength >= 60 || element.descendantImageCount > 0 || element.descendantLinkCount > 0;
-  const genericTokenCount = element.classTokensNormalized.filter(token => GENERIC_LAYOUT_TOKENS.has(token)).length;
+interface CandidateSignals {
+  hasOwnContent: boolean;
+  hasDescendantContent: boolean;
+  genericTokenCount: number;
+  likelyWrapper: boolean;
+  likelyRepeated: boolean;
+}
+
+interface RejectionRule {
+  applies: boolean;
+  penalty: number;
+  reason: string;
+}
+
+function getCandidateSignals(element: DomElement): CandidateSignals {
+  const hasOwnContent =
+    element.directTextLength >= 30 ||
+    element.ownImageCount > 0 ||
+    element.hasForm;
+  const hasDescendantContent =
+    element.totalTextLength >= 60 ||
+    element.descendantImageCount > 0 ||
+    element.descendantLinkCount > 0;
+  const genericTokenCount = element.classTokensNormalized.filter((token) =>
+    GENERIC_LAYOUT_TOKENS.has(token),
+  ).length;
   const likelyWrapper =
     element.meaningfulChildCount <= 1 &&
     !hasOwnContent &&
     element.totalTextLength > 0 &&
     element.totalTextLength > element.directTextLength * 4;
-  const likelyRepeated = element.repeatedSiblingCount >= 2;
 
-  if (element.isSemanticTag) score += 3;
-  if (element.id) score += 2;
-  if (hasOwnContent) score += 3;
-  if (hasDescendantContent) score += 1;
-  if (element.hasForm) score += 2;
-  if (element.descendantImageCount >= 2) score += 1;
-  if (likelyRepeated) score += 2;
-  if (element.depth >= 2 && element.depth <= 9) score += 1;
-  if (element.meaningfulChildCount >= 2 && element.meaningfulChildCount <= 12) score += 2;
-  if (element.totalTextLength > 120 && element.totalTextLength < 3000) score += 1;
-  if (element.inMainContent) score += 4;
-  if (element.containsHeading) score += 3;
-  if (!element.inChromeRegion && (element.containsHeading || element.totalTextLength > 180 || element.ownImageCount > 0)) {
-    score += 3;
+  return {
+    hasOwnContent,
+    hasDescendantContent,
+    genericTokenCount,
+    likelyWrapper,
+    likelyRepeated: element.repeatedSiblingCount >= 2,
+  };
+}
+
+function scoreRules(rules: Array<[boolean, number]>): number {
+  return rules.reduce((score, [applies, value]) => {
+    return applies ? score + value : score;
+  }, 0);
+}
+
+function hasStrongNonChromeSignal(element: DomElement): boolean {
+  return (
+    !element.inChromeRegion &&
+    (element.containsHeading ||
+      element.totalTextLength > 180 ||
+      element.ownImageCount > 0)
+  );
+}
+
+function getPositiveScore(
+  element: DomElement,
+  signals: CandidateSignals,
+): number {
+  return scoreRules([
+    [element.isSemanticTag, 3],
+    [Boolean(element.id), 2],
+    [signals.hasOwnContent, 3],
+    [signals.hasDescendantContent, 1],
+    [element.hasForm, 2],
+    [element.descendantImageCount >= 2, 1],
+    [signals.likelyRepeated, 2],
+    [element.depth >= 2 && element.depth <= 9, 1],
+    [
+      element.meaningfulChildCount >= 2 && element.meaningfulChildCount <= 12,
+      2,
+    ],
+    [element.totalTextLength > 120 && element.totalTextLength < 3000, 1],
+    [element.inMainContent, 4],
+    [element.containsHeading, 3],
+    [hasStrongNonChromeSignal(element), 3],
+  ]);
+}
+
+function hasInheritedContentShape(element: DomElement): boolean {
+  return (
+    element.directTextLength < 8 &&
+    element.totalTextLength > 400 &&
+    element.meaningfulChildCount >= 3
+  );
+}
+
+function hasLowSignalContent(element: DomElement): boolean {
+  return (
+    element.totalTextLength < 10 &&
+    !element.hasForm &&
+    element.descendantImageCount === 0 &&
+    element.descendantLinkCount < 2
+  );
+}
+
+function hasOverlaySelector(element: DomElement): boolean {
+  return (
+    element.selector.includes('flatpickr') ||
+    element.selector.includes('menu-') ||
+    element.selector.includes('popup')
+  );
+}
+
+function getRejectionRules(
+  element: DomElement,
+  signals: CandidateSignals,
+): RejectionRule[] {
+  return [
+    {
+      applies: signals.genericTokenCount > 0,
+      penalty: Math.min(3, signals.genericTokenCount),
+      reason: 'generic_layout_tokens',
+    },
+    {
+      applies: element.inChromeRegion && !element.inMainContent,
+      penalty: 5,
+      reason: 'inside_chrome_region',
+    },
+    {
+      applies: signals.likelyWrapper,
+      penalty: 4,
+      reason: 'single_meaningful_child_wrapper',
+    },
+    {
+      applies: element.depth > 12 && !signals.hasOwnContent,
+      penalty: 2,
+      reason: 'very_deep_leaf',
+    },
+    {
+      applies: hasInheritedContentShape(element),
+      penalty: 3,
+      reason: 'inherits_most_content',
+    },
+    {
+      applies: hasLowSignalContent(element),
+      penalty: 2,
+      reason: 'low_signal',
+    },
+    {
+      applies: hasOverlaySelector(element),
+      penalty: 4,
+      reason: 'ui_overlay_or_menu',
+    },
+  ];
+}
+
+function applyRejections(
+  score: number,
+  rules: RejectionRule[],
+): { score: number; reasons: string[] } {
+  const reasons: string[] = [];
+  let adjustedScore = score;
+
+  for (const rule of rules) {
+    if (rule.applies) {
+      adjustedScore -= rule.penalty;
+      reasons.push(rule.reason);
+    }
   }
 
-  if (genericTokenCount > 0) {
-    score -= Math.min(3, genericTokenCount);
-    rejectionReasons.push('generic_layout_tokens');
+  return { score: adjustedScore, reasons };
+}
+
+function getStructuralRole(
+  element: DomElement,
+  signals: CandidateSignals,
+): DomCandidate['structuralRole'] {
+  if (
+    element.inChromeRegion ||
+    (element.isSemanticTag &&
+      ['header', 'footer', 'nav', 'aside'].includes(element.tag))
+  ) {
+    return 'chrome_candidate';
   }
-  if (element.inChromeRegion && !element.inMainContent) {
-    score -= 5;
-    rejectionReasons.push('inside_chrome_region');
-  }
-  if (likelyWrapper) {
-    score -= 4;
-    rejectionReasons.push('single_meaningful_child_wrapper');
-  }
-  if (element.depth > 12 && !hasOwnContent) {
-    score -= 2;
-    rejectionReasons.push('very_deep_leaf');
-  }
-  if (element.directTextLength < 8 && element.totalTextLength > 400 && element.meaningfulChildCount >= 3) {
-    score -= 3;
-    rejectionReasons.push('inherits_most_content');
-  }
-  if (element.totalTextLength < 10 && !element.hasForm && element.descendantImageCount === 0 && element.descendantLinkCount < 2) {
-    score -= 2;
-    rejectionReasons.push('low_signal');
-  }
-  if (element.selector.includes('flatpickr') || element.selector.includes('menu-') || element.selector.includes('popup')) {
-    score -= 4;
-    rejectionReasons.push('ui_overlay_or_menu');
-  }
-  let structuralRole: DomCandidate['structuralRole'] = 'section_candidate';
-  if (element.inChromeRegion || (element.isSemanticTag && ['header', 'footer', 'nav', 'aside'].includes(element.tag))) {
-    structuralRole = 'chrome_candidate';
-  } else if (likelyRepeated) {
-    structuralRole = 'repeated_item_candidate';
-  }
+  return signals.likelyRepeated
+    ? 'repeated_item_candidate'
+    : 'section_candidate';
+}
+
+function scoreElementCandidate(element: DomElement): DomCandidate {
+  const signals = getCandidateSignals(element);
+  const positiveScore = getPositiveScore(element, signals);
+  const rejection = applyRejections(
+    positiveScore,
+    getRejectionRules(element, signals),
+  );
 
   return {
     ...element,
-    score,
-    structuralRole,
-    likelyRepeated,
-    likelyWrapper,
-    rejectionReasons,
+    score: rejection.score,
+    structuralRole: getStructuralRole(element, signals),
+    likelyRepeated: signals.likelyRepeated,
+    likelyWrapper: signals.likelyWrapper,
+    rejectionReasons: rejection.reasons,
   };
 }
 
 function shouldKeepCandidate(candidate: DomCandidate): boolean {
   if (candidate.score >= 4) return true;
   if (candidate.hasForm) return true;
-  if (!candidate.inChromeRegion && (candidate.containsHeading || candidate.totalTextLength > 180)) return true;
+  if (
+    !candidate.inChromeRegion &&
+    (candidate.containsHeading || candidate.totalTextLength > 180)
+  )
+    return true;
   if (candidate.inMainContent && candidate.containsHeading) return true;
-  if (candidate.isSemanticTag && candidate.totalTextLength >= 40 && candidate.inMainContent) return true;
-  if (candidate.likelyRepeated && candidate.inMainContent && (candidate.directTextLength >= 20 || candidate.ownImageCount > 0 || candidate.descendantLinkCount > 0)) return true;
+  if (
+    candidate.isSemanticTag &&
+    candidate.totalTextLength >= 40 &&
+    candidate.inMainContent
+  )
+    return true;
+  if (
+    candidate.likelyRepeated &&
+    candidate.inMainContent &&
+    (candidate.directTextLength >= 20 ||
+      candidate.ownImageCount > 0 ||
+      candidate.descendantLinkCount > 0)
+  )
+    return true;
   return false;
 }
 
@@ -295,7 +468,9 @@ function dedupeCandidates(candidates: DomCandidate[]): DomCandidate[] {
   const kept: DomCandidate[] = [];
 
   for (const candidate of unique) {
-    const parent = candidate.parentSelector ? bySelector.get(candidate.parentSelector) : undefined;
+    const parent = candidate.parentSelector
+      ? bySelector.get(candidate.parentSelector)
+      : undefined;
     if (
       parent &&
       parent.score >= candidate.score &&

@@ -2,22 +2,29 @@
   "name": "scraper",
   "version": "1.0.0",
   "type": "module",
+  "main": "index.ts",
   "scripts": {
     "start": "bun run index.ts",
-    "test": "bun run test.ts",
-    "typecheck": "bunx tsc --noEmit"
+    "test": "bun run check",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write --unsafe .",
+    "knip": "knip",
+    "knip:prod": "knip --production",
+    "check": "biome check . && tsc --noEmit && knip && knip --production"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.89",
     "@anthropic-ai/sdk": "^0.82.0",
     "cheerio": "^1.2.0",
+    "domhandler": "^5.0.3",
     "dotenv": "^17.4.0",
-    "playwright": "^1.52.0",
-    "zod": "^4.3.6"
+    "playwright": "^1.52.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.10",
     "@types/node": "^22.0.0",
-    "tsx": "^4.19.2",
+    "knip": "^5.88.1",
     "typescript": "^5.8.0"
   }
 }

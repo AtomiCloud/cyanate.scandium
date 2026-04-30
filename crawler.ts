@@ -1,4 +1,4 @@
-import { chromium, type Browser, type Page } from 'playwright';
+import { type Browser, chromium, type Page } from 'playwright';
 import { reduceDomCandidates } from './schema-extractor.js';
 import type { CrawlResult, DomElement } from './types.js';
 
@@ -8,7 +8,7 @@ export interface CrawlerOptions {
 
 export async function crawlSite(
   baseUrl: string,
-  options: CrawlerOptions = {}
+  options: CrawlerOptions = {},
 ): Promise<CrawlResult[]> {
   const { concurrency = 50 } = options;
   const browser = await chromium.launch({ headless: true });
@@ -25,37 +25,18 @@ export async function crawlSite(
     let batchNum = 0;
     while (toVisit.length > 0) {
       batchNum++;
-      const batchSize = Math.min(concurrency, toVisit.length);
-      const batch: string[] = [];
-      for (let i = 0; i < batchSize; i++) {
-        const url = toVisit.shift();
-        if (url && !visited.has(url)) {
-          batch.push(url);
-          visited.add(url);
-        }
-      }
+      const batch = takeNextBatch(toVisit, visited, concurrency);
 
       if (batch.length === 0) continue;
 
-      console.log(`  [Batch ${batchNum}] Crawling ${batch.length} pages (${visited.size} visited, ${toVisit.length} queued)`);
-
-      const batchResults = await Promise.allSettled(
-        batch.map((url) => crawlPage(browser, url, baseUrl, baseDomain))
+      console.log(
+        `  [Batch ${batchNum}] Crawling ${batch.length} pages (${visited.size} visited, ${toVisit.length} queued)`,
       );
 
-      for (let i = 0; i < batchResults.length; i++) {
-        const result = batchResults[i];
-        if (result.status === 'fulfilled' && result.value) {
-          results.push(result.value);
-          for (const link of result.value.links) {
-            if (!visited.has(link) && !queued.has(link)) {
-              queued.add(link);
-              toVisit.push(link);
-            }
-          }
-        } else if (result.status === 'rejected') {
-          console.error(`  Failed: ${batch[i]}`);
-        }
+      const crawled = await crawlBatch(browser, batch, baseUrl, baseDomain);
+      for (const result of crawled) {
+        results.push(result);
+        enqueueDiscoveredLinks(result.links, visited, queued, toVisit);
       }
     }
 
@@ -63,6 +44,65 @@ export async function crawlSite(
     return results;
   } finally {
     await browser.close();
+  }
+}
+
+function takeNextBatch(
+  toVisit: string[],
+  visited: Set<string>,
+  concurrency: number,
+): string[] {
+  const batchSize = Math.min(concurrency, toVisit.length);
+  const batch: string[] = [];
+
+  for (let i = 0; i < batchSize; i++) {
+    const url = toVisit.shift();
+    if (url && !visited.has(url)) {
+      batch.push(url);
+      visited.add(url);
+    }
+  }
+
+  return batch;
+}
+
+async function crawlBatch(
+  browser: Browser,
+  batch: string[],
+  baseUrl: string,
+  baseDomain: string,
+): Promise<CrawlResult[]> {
+  const settled = await Promise.allSettled(
+    batch.map((url) => crawlPage(browser, url, baseUrl, baseDomain)),
+  );
+  const results: CrawlResult[] = [];
+
+  for (let i = 0; i < settled.length; i++) {
+    const result = settled[i];
+    if (result.status === 'fulfilled' && result.value) {
+      results.push(result.value);
+      continue;
+    }
+
+    if (result.status === 'rejected') {
+      console.error(`  Failed: ${batch[i]}`);
+    }
+  }
+
+  return results;
+}
+
+function enqueueDiscoveredLinks(
+  links: string[],
+  visited: Set<string>,
+  queued: Set<string>,
+  toVisit: string[],
+) {
+  for (const link of links) {
+    if (!visited.has(link) && !queued.has(link)) {
+      queued.add(link);
+      toVisit.push(link);
+    }
   }
 }
 
@@ -76,8 +116,14 @@ function preprocessHtml(html: string): string {
     .replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, '')
     .replace(/<svg[^>]*>[\s\S]*?<\/svg>/gi, '[svg]')
     .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/\s+(?:style|data-[\w-]+|aria-[\w-]+|role|tabindex|fetchpriority|decoding|loading|srcset|sizes|width|height)="[^"]*"/gi, '')
-    .replace(/\s+(?:style|data-[\w-]+|aria-[\w-]+|role|tabindex|fetchpriority|decoding|loading|srcset|sizes|width|height)='[^']*'/gi, '')
+    .replace(
+      /\s+(?:style|data-[\w-]+|aria-[\w-]+|role|tabindex|fetchpriority|decoding|loading|srcset|sizes|width|height)="[^"]*"/gi,
+      '',
+    )
+    .replace(
+      /\s+(?:style|data-[\w-]+|aria-[\w-]+|role|tabindex|fetchpriority|decoding|loading|srcset|sizes|width|height)='[^']*'/gi,
+      '',
+    )
     .replace(/<(div|span|i|em|b|strong)[^>]*>\s*<\/\1>/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -89,7 +135,7 @@ async function crawlPage(
   browser: Browser,
   url: string,
   baseUrl: string,
-  baseDomain: string
+  baseDomain: string,
 ): Promise<CrawlResult | null> {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -115,7 +161,10 @@ async function crawlPage(
 
     return { url, html: processedHtml, links, elements, candidates };
   } catch (error) {
-    console.error(`  Error crawling ${url}:`, error instanceof Error ? error.message : String(error));
+    console.error(
+      `  Error crawling ${url}:`,
+      error instanceof Error ? error.message : String(error),
+    );
     return null;
   } finally {
     await context.close();
@@ -124,231 +173,350 @@ async function crawlPage(
 
 async function extractDomElements(page: Page): Promise<DomElement[]> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return await page.evaluate((): any[] => {
-    const results: any[] = [];
-    const skip = new Set(['HTML', 'HEAD', 'SCRIPT', 'STYLE', 'NOSCRIPT', 'LINK', 'META', 'BR', 'HR', 'WBR', 'SVG', 'PATH']);
-    const semanticTags = new Set(['HEADER', 'FOOTER', 'NAV', 'MAIN', 'ARTICLE', 'ASIDE', 'SECTION']);
-    const meaningfulTagNames = new Set(['SECTION', 'ARTICLE', 'NAV', 'ASIDE', 'HEADER', 'FOOTER', 'MAIN', 'FORM', 'UL', 'OL', 'LI']);
-    const genericClassTokens = new Set(['elementor', 'elementor-element', 'e-con', 'e-child', 'e-parent', 'e-flex', 'container', 'wrapper', 'row', 'col', 'inner', 'outer', 'widget']);
+    return await page.evaluate((): DomElement[] => {
+      const results: DomElement[] = [];
+      const skip = new Set<string>([
+        'HTML',
+        'HEAD',
+        'SCRIPT',
+        'STYLE',
+        'NOSCRIPT',
+        'LINK',
+        'META',
+        'BR',
+        'HR',
+        'WBR',
+        'SVG',
+        'PATH',
+      ]);
+      const semanticTags = new Set<string>([
+        'HEADER',
+        'FOOTER',
+        'NAV',
+        'MAIN',
+        'ARTICLE',
+        'ASIDE',
+        'SECTION',
+      ]);
+      const meaningfulTagNames = new Set<string>([
+        'SECTION',
+        'ARTICLE',
+        'NAV',
+        'ASIDE',
+        'HEADER',
+        'FOOTER',
+        'MAIN',
+        'FORM',
+        'UL',
+        'OL',
+        'LI',
+      ]);
+      const genericClassTokens = new Set<string>([
+        'elementor',
+        'elementor-element',
+        'e-con',
+        'e-child',
+        'e-parent',
+        'e-flex',
+        'container',
+        'wrapper',
+        'row',
+        'col',
+        'inner',
+        'outer',
+        'widget',
+      ]);
+      const mainContentClasses = new Set<string>([
+        'content',
+        'primary',
+        'main-content',
+        'entry-content',
+        'post-content',
+        'article-content',
+        'site-main',
+      ]);
+      const mediaSelector = 'img, picture, video, iframe';
+      const formSelector = 'form, input, select, textarea, button';
 
-    function getSelector(el: any): string {
-      const tag = el.tagName.toLowerCase();
-      const id = el.getAttribute('id');
-      if (id) return `#${id}`;
-
-      const classes = Array.from(el.classList).filter((c: any) => {
-        if (c.length < 2) return false;
-        if (/^[0-9]/.test(c as string)) return false;
-        return true;
-      }) as string[];
-      const preferred = classes.find((c) => /^elementor-element-[a-z0-9]+$/i.test(c))
-        || classes.find((c) => c.includes('__'))
-        || classes.find((c) => c.includes('--'))
-        || classes.find((c) => !genericClassTokens.has(c.toLowerCase()))
-        || classes[0];
-      if (preferred) return `${tag}.${preferred}`;
-      return tag;
-    }
-
-    function getAncestorSelectors(el: any): string[] {
-      const selectors: string[] = [];
-      let current = el.parentElement;
-      while (current && current.tagName !== 'BODY') {
-        selectors.unshift(getSelector(current));
-        current = current.parentElement;
+      function classNames(el: Element): string[] {
+        return Array.from(el.classList);
       }
-      return selectors.slice(-4);
-    }
 
-    function getDepth(el: any): number {
-      let depth = 0;
-      let current = el.parentElement;
-      while (current) { depth++; current = current.parentElement; }
-      return depth;
-    }
+      function lowerClassNames(el: Element): string[] {
+        return classNames(el).map((className) => className.toLowerCase());
+      }
 
-    function normalizeClassTokens(classes: string[]): string[] {
-      const tokens = new Set<string>();
-      for (const cls of classes) {
-        const parts = cls
-          .replace(/([a-z])([A-Z])/g, '$1-$2')
-          .toLowerCase()
-          .split(/[^a-z0-9]+/)
-          .filter(Boolean);
-        for (const part of parts) {
-          if (part.length >= 3) tokens.add(part);
+      function directText(el: Element): string {
+        return Array.from(el.childNodes)
+          .filter((node): node is Text => node.nodeType === Node.TEXT_NODE)
+          .map((node) => node.textContent?.trim() || '')
+          .join(' ')
+          .trim();
+      }
+
+      function getSelector(el: Element): string {
+        const tag = el.tagName.toLowerCase();
+        const id = el.getAttribute('id');
+        if (id) return `#${id}`;
+
+        const classes = classNames(el).filter((className) => {
+          if (className.length < 2) return false;
+          if (/^[0-9]/.test(className)) return false;
+          return true;
+        });
+        const preferred =
+          classes.find((c) => /^elementor-element-[a-z0-9]+$/i.test(c)) ||
+          classes.find((c) => c.includes('__')) ||
+          classes.find((c) => c.includes('--')) ||
+          classes.find((c) => !genericClassTokens.has(c.toLowerCase())) ||
+          classes[0];
+        if (preferred) return `${tag}.${preferred}`;
+        return tag;
+      }
+
+      function getAncestorSelectors(el: Element): string[] {
+        const selectors: string[] = [];
+        let current = el.parentElement;
+        while (current && current.tagName !== 'BODY') {
+          selectors.unshift(getSelector(current));
+          current = current.parentElement;
         }
+        return selectors.slice(-4);
       }
-      return Array.from(tokens).slice(0, 8);
-    }
 
-    function hasMainContentAncestor(el: any): boolean {
-      let current = el;
-      while (current) {
-        const id = (current.getAttribute?.('id') || '').toLowerCase();
-        const classes = Array.from(current.classList || []).map((c: any) => String(c).toLowerCase());
-        if (
-          current.tagName === 'MAIN' ||
-          current.tagName === 'ARTICLE' ||
+      function getDepth(el: Element): number {
+        let depth = 0;
+        let current = el.parentElement;
+        while (current) {
+          depth++;
+          current = current.parentElement;
+        }
+        return depth;
+      }
+
+      function hasMainContentIdentity(el: Element): boolean {
+        const id = (el.getAttribute('id') || '').toLowerCase();
+        const classes = lowerClassNames(el);
+        return (
+          el.tagName === 'MAIN' ||
+          el.tagName === 'ARTICLE' ||
           id === 'content' ||
           id === 'primary' ||
           id === 'main' ||
-          classes.some((cls: string) => ['content', 'primary', 'main-content', 'entry-content', 'post-content', 'article-content', 'site-main'].includes(cls))
-        ) {
-          return true;
-        }
-        current = current.parentElement;
+          classes.some((className) => mainContentClasses.has(className))
+        );
       }
-      return false;
-    }
 
-    function hasChromeAncestor(el: any): boolean {
-      let current = el.parentElement;
-      while (current && current.tagName !== 'BODY') {
-        const id = (current.getAttribute?.('id') || '').toLowerCase();
-        const classes = Array.from(current.classList || []).map((c: any) => String(c).toLowerCase());
-        const isMenuLike = classes.some((cls: string) =>
-          cls === 'e-n-menu' ||
-          cls.startsWith('e-n-menu') ||
-          cls.startsWith('elementor-nav-menu') ||
-          cls.includes('breadcrumb')
+      function normalizeClassTokens(classes: string[]): string[] {
+        const tokens = new Set<string>();
+        for (const cls of classes) {
+          const parts = cls
+            .replace(/([a-z])([A-Z])/g, '$1-$2')
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .filter(Boolean);
+          for (const part of parts) {
+            if (part.length >= 3) tokens.add(part);
+          }
+        }
+        return Array.from(tokens).slice(0, 8);
+      }
+
+      function hasMainContentAncestor(el: Element): boolean {
+        let current: Element | null = el;
+        while (current) {
+          if (hasMainContentIdentity(current)) {
+            return true;
+          }
+          current = current.parentElement;
+        }
+        return false;
+      }
+
+      function isMenuLike(classes: string[]): boolean {
+        return classes.some(
+          (className) =>
+            className === 'e-n-menu' ||
+            className.startsWith('e-n-menu') ||
+            className.startsWith('elementor-nav-menu') ||
+            className.includes('breadcrumb'),
         );
-        const isPopupLike = classes.some((cls: string) =>
-          cls.startsWith('wa__') ||
-          cls.startsWith('flatpickr') ||
-          cls.includes('popup')
+      }
+
+      function isPopupLike(classes: string[]): boolean {
+        return classes.some(
+          (className) =>
+            className.startsWith('wa__') ||
+            className.startsWith('flatpickr') ||
+            className.includes('popup'),
         );
-        const isHeaderFooterLike = classes.some((cls: string) =>
-          cls === 'elementor-location-header' ||
-          cls === 'elementor-location-footer' ||
-          cls.includes('site-header') ||
-          cls.includes('site-footer')
+      }
+
+      function isHeaderFooterLike(classes: string[]): boolean {
+        return classes.some(
+          (className) =>
+            className === 'elementor-location-header' ||
+            className === 'elementor-location-footer' ||
+            className.includes('site-header') ||
+            className.includes('site-footer'),
         );
-        if (
-          current.tagName === 'HEADER' ||
-          current.tagName === 'FOOTER' ||
-          current.tagName === 'NAV' ||
+      }
+
+      function isChromeElement(el: Element): boolean {
+        const id = (el.getAttribute('id') || '').toLowerCase();
+        const classes = lowerClassNames(el);
+        return (
+          el.tagName === 'HEADER' ||
+          el.tagName === 'FOOTER' ||
+          el.tagName === 'NAV' ||
           id === 'wa' ||
           id.startsWith('menu-') ||
-          isMenuLike ||
-          isPopupLike ||
-          isHeaderFooterLike
-        ) {
-          return true;
-        }
-        current = current.parentElement;
+          isMenuLike(classes) ||
+          isPopupLike(classes) ||
+          isHeaderFooterLike(classes)
+        );
       }
-      return false;
-    }
 
-    function getDirectTextLength(el: any): number {
-      return Array.from(el.childNodes)
-        .filter((n: any) => n.nodeType === 3)
-        .map((n: any) => n.textContent?.trim() || '')
-        .join(' ')
-        .trim()
-        .length;
-    }
-
-    function countMeaningfulChildren(el: any): number {
-      let count = 0;
-      for (const child of el.children) {
-        if (skip.has(child.tagName)) continue;
-        const classes = Array.from(child.classList);
-        const hasMeaningfulClass = classes.length > 0;
-        const hasId = !!child.getAttribute('id');
-        const hasOwnText = getDirectTextLength(child) >= 20;
-        const hasMedia = child.querySelector('img, picture, video, iframe') !== null;
-        const hasForm = child.querySelector('form, input, select, textarea, button') !== null;
-        const isMeaningfulTag = meaningfulTagNames.has(child.tagName);
-        if (hasMeaningfulClass || hasId || hasOwnText || hasMedia || hasForm || isMeaningfulTag) {
-          count++;
+      function hasChromeAncestor(el: Element): boolean {
+        let current = el.parentElement;
+        while (current && current.tagName !== 'BODY') {
+          if (isChromeElement(current)) {
+            return true;
+          }
+          current = current.parentElement;
         }
+        return false;
       }
-      return count;
-    }
 
-    function getRepeatedSiblingCount(el: any): number {
-      if (!el.parentElement) return 0;
-      const tag = el.tagName;
-      const classKey = Array.from(el.classList).slice(0, 2).join('.');
-      let count = 0;
-      for (const sibling of el.parentElement.children) {
-        if (sibling.tagName !== tag) continue;
-        const siblingClassKey = Array.from(sibling.classList).slice(0, 2).join('.');
-        if (classKey && siblingClassKey === classKey) {
-          count++;
-        } else if (!classKey) {
-          count++;
+      function getDirectTextLength(el: Element): number {
+        return directText(el).length;
+      }
+
+      function isMeaningfulChild(child: Element): boolean {
+        return [
+          classNames(child).length > 0,
+          Boolean(child.getAttribute('id')),
+          getDirectTextLength(child) >= 20,
+          child.querySelector(mediaSelector) !== null,
+          child.querySelector(formSelector) !== null,
+          meaningfulTagNames.has(child.tagName),
+        ].some(Boolean);
+      }
+
+      function countMeaningfulChildren(el: Element): number {
+        let count = 0;
+        for (const child of el.children) {
+          if (skip.has(child.tagName)) continue;
+          if (isMeaningfulChild(child)) count++;
         }
+        return count;
       }
-      return Math.max(0, count - 1);
-    }
 
-    function walk(el: any) {
-      if (skip.has(el.tagName)) return;
+      function siblingClassKey(el: Element): string {
+        return classNames(el).slice(0, 2).join('.');
+      }
 
-      const tag = el.tagName.toLowerCase();
-      const id = el.getAttribute('id') || '';
-      const classes = Array.from(el.classList);
-      const isSemantic = semanticTags.has(el.tagName);
+      function isMatchingSibling(
+        sibling: Element,
+        tagName: string,
+        classKey: string,
+      ): boolean {
+        return (
+          sibling.tagName === tagName &&
+          (!classKey || siblingClassKey(sibling) === classKey)
+        );
+      }
 
-      // Only include elements with class, id, or semantic tags
-      if (!id && classes.length === 0 && !isSemantic) {
-        // Still walk children
+      function getRepeatedSiblingCount(el: Element): number {
+        const parent = el.parentElement;
+        if (!parent) return 0;
+
+        const classKey = siblingClassKey(el);
+        const matchingSiblings = Array.from(parent.children).filter((sibling) =>
+          isMatchingSibling(sibling, el.tagName, classKey),
+        );
+        return Math.max(0, matchingSiblings.length - 1);
+      }
+
+      function getParentSelector(el: Element): string | null {
+        if (!el.parentElement || el.parentElement.tagName === 'BODY') {
+          return null;
+        }
+        return getSelector(el.parentElement);
+      }
+
+      function shouldRecordElement(
+        id: string,
+        classes: string[],
+        isSemantic: boolean,
+      ): boolean {
+        return Boolean(id || classes.length > 0 || isSemantic);
+      }
+
+      function buildDomElement(el: Element): DomElement {
+        const tag = el.tagName.toLowerCase();
+        const id = el.getAttribute('id') || '';
+        const classes = classNames(el);
+        const isSemantic = semanticTags.has(el.tagName);
+        const directTextValue = directText(el);
+        const fullText = (el.textContent || '').trim();
+
+        return {
+          selector: getSelector(el),
+          tag,
+          classes,
+          id,
+          depth: getDepth(el),
+          parentSelector: getParentSelector(el),
+          ancestorSelectors: getAncestorSelectors(el),
+          textPreview: (directTextValue || fullText).substring(0, 150),
+          childCount: el.children.length,
+          meaningfulChildCount: countMeaningfulChildren(el),
+          repeatedSiblingCount: getRepeatedSiblingCount(el),
+          directTextLength: directTextValue.length,
+          totalTextLength: fullText.length,
+          ownLinkCount: el.matches('a[href]') ? 1 : 0,
+          descendantLinkCount: el.querySelectorAll('a[href]').length,
+          ownImageCount: el.matches(mediaSelector) ? 1 : 0,
+          descendantImageCount: el.querySelectorAll(mediaSelector).length,
+          hasForm:
+            el.matches('form') || el.querySelector(formSelector) !== null,
+          isSemanticTag: isSemantic,
+          classTokensNormalized: normalizeClassTokens(classes),
+          inMainContent: hasMainContentAncestor(el),
+          inChromeRegion: hasChromeAncestor(el),
+          containsHeading: el.querySelector('h1, h2, h3, h4, h5, h6') !== null,
+        };
+      }
+
+      function walkChildren(el: Element): void {
         for (const child of el.children) walk(child);
-        return;
       }
 
-      const directText = Array.from(el.childNodes)
-        .filter((n: any) => n.nodeType === 3)
-        .map((n: any) => n.textContent?.trim() || '')
-        .join(' ')
-        .trim();
-      const fullText = (el.textContent || '').trim();
-      const textPreview = (directText || fullText).substring(0, 150);
-      const ownLinks = el.matches('a[href]') ? 1 : 0;
-      const descendantLinks = el.querySelectorAll('a[href]').length;
-      const ownImages = el.matches('img, picture, video, iframe') ? 1 : 0;
-      const descendantImages = el.querySelectorAll('img, picture, video, iframe').length;
-      const containsHeading = el.querySelector('h1, h2, h3, h4, h5, h6') !== null;
+      function walk(el: Element): void {
+        if (skip.has(el.tagName)) return;
 
-      results.push({
-        selector: getSelector(el),
-        tag,
-        classes,
-        id,
-        depth: getDepth(el),
-        parentSelector: el.parentElement && el.parentElement.tagName !== 'BODY' ? getSelector(el.parentElement) : null,
-        ancestorSelectors: getAncestorSelectors(el),
-        textPreview,
-        childCount: el.children.length,
-        meaningfulChildCount: countMeaningfulChildren(el),
-        repeatedSiblingCount: getRepeatedSiblingCount(el),
-        directTextLength: directText.length,
-        totalTextLength: fullText.length,
-        ownLinkCount: ownLinks,
-        descendantLinkCount: descendantLinks,
-        ownImageCount: ownImages,
-        descendantImageCount: descendantImages,
-        hasForm: el.matches('form') || el.querySelector('form, input, select, textarea, button') !== null,
-        isSemanticTag: isSemantic,
-        classTokensNormalized: normalizeClassTokens(classes as string[]),
-        inMainContent: hasMainContentAncestor(el),
-        inChromeRegion: hasChromeAncestor(el),
-        containsHeading,
-      });
+        const id = el.getAttribute('id') || '';
+        const classes = classNames(el);
+        const isSemantic = semanticTags.has(el.tagName);
 
-      // Walk children
-      for (const child of el.children) walk(child);
-    }
+        if (!shouldRecordElement(id, classes, isSemantic)) {
+          walkChildren(el);
+          return;
+        }
 
-    walk(document.body);
-    return results;
-  });
+        results.push(buildDomElement(el));
+        walkChildren(el);
+      }
+
+      walk(document.body);
+      return results;
+    });
   } catch (error) {
-    console.error('  Error extracting DOM elements:', error instanceof Error ? error.message : String(error));
+    console.error(
+      '  Error extracting DOM elements:',
+      error instanceof Error ? error.message : String(error),
+    );
     return [];
   }
 }
@@ -356,10 +524,12 @@ async function extractDomElements(page: Page): Promise<DomElement[]> {
 async function extractLinks(
   page: Page,
   baseUrl: string,
-  baseDomain: string
+  baseDomain: string,
 ): Promise<string[]> {
-  const links = await page.$$eval('a[href]', (anchors) =>
-    anchors.map((a) => a.getAttribute('href')).filter(Boolean) as string[]
+  const links = await page.$$eval(
+    'a[href]',
+    (anchors) =>
+      anchors.map((a) => a.getAttribute('href')).filter(Boolean) as string[],
   );
 
   const uniqueLinks = new Set<string>();
@@ -369,7 +539,9 @@ async function extractLinks(
       const absoluteUrl = new URL(link, baseUrl);
       if (absoluteUrl.hostname === baseDomain) {
         const normalizedUrl = absoluteUrl.origin + absoluteUrl.pathname;
-        if (!normalizedUrl.match(/\.(pdf|jpg|jpeg|png|gif|svg|css|js|zip|ico)$/i)) {
+        if (
+          !normalizedUrl.match(/\.(pdf|jpg|jpeg|png|gif|svg|css|js|zip|ico)$/i)
+        ) {
           uniqueLinks.add(normalizedUrl);
         }
       }

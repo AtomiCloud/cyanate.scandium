@@ -28,7 +28,10 @@ export interface DomElement {
 
 export interface DomCandidate extends DomElement {
   score: number;
-  structuralRole: 'section_candidate' | 'repeated_item_candidate' | 'chrome_candidate';
+  structuralRole:
+    | 'section_candidate'
+    | 'repeated_item_candidate'
+    | 'chrome_candidate';
   likelyRepeated: boolean;
   likelyWrapper: boolean;
   rejectionReasons: string[];
@@ -40,11 +43,6 @@ export interface CrawlResult {
   links: string[];
   elements: DomElement[];
   candidates: DomCandidate[];
-}
-
-export interface CrawlOutput {
-  results: CrawlResult[];
-  discovered_urls: string[];
 }
 
 // --- Structure types (Phase 2 output) ---

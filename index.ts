@@ -1,26 +1,52 @@
 import 'dotenv/config';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
-import path from 'path';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
+import path from 'node:path';
 import { query, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
-import { crawlSite } from './crawler.js';
-import { savePage, urlToFilename, setPagesDir } from './tools.js';
 import { standardizeGlobalNames } from './api.js';
-import { detectGlobalComponents, extractContent, normalizeSchemaState, type SchemaState, type SchemaSection } from './schema-extractor.js';
-import type { SiteStructure, FilteredOutput, SchemaOutput, GroupedContentOutput, PageType } from './types.js';
+import { crawlSite } from './crawler.js';
+import {
+  detectGlobalComponents,
+  extractContent,
+  normalizeSchemaState,
+  type SchemaSection,
+  type SchemaState,
+} from './schema-extractor.js';
+import { savePage, setPagesDir, urlToFilename } from './tools.js';
+import type {
+  FilteredOutput,
+  GroupedContentOutput,
+  PageType,
+  SchemaOutput,
+  SiteStructure,
+} from './types.js';
 
 // --- Config ---
-const CRAWL_CONCURRENCY = parseInt(process.env.CRAWL_CONCURRENCY || '10');
-const EXTRACT_CONCURRENCY = parseInt(process.env.EXTRACT_CONCURRENCY || '5');
-const EXTRACT_RETRIES = 3;
-const SCHEMA_SAMPLE_MIN = parseInt(process.env.SCHEMA_SAMPLE_MIN || '20');
-const SCHEMA_SAMPLE_RATIO = parseFloat(process.env.SCHEMA_SAMPLE_RATIO || '0.6');
-const SCHEMA_BATCH_SIZE = parseInt(process.env.SCHEMA_BATCH_SIZE || '5');
-const SCHEMA_CONCURRENCY = parseInt(process.env.SCHEMA_CONCURRENCY || '3');
+const CRAWL_CONCURRENCY = parseInt(process.env.CRAWL_CONCURRENCY || '10', 10);
+const _EXTRACT_CONCURRENCY = parseInt(
+  process.env.EXTRACT_CONCURRENCY || '5',
+  10,
+);
+const _EXTRACT_RETRIES = 3;
+const SCHEMA_SAMPLE_MIN = parseInt(process.env.SCHEMA_SAMPLE_MIN || '20', 10);
+const SCHEMA_SAMPLE_RATIO = parseFloat(
+  process.env.SCHEMA_SAMPLE_RATIO || '0.6',
+);
+const SCHEMA_BATCH_SIZE = parseInt(process.env.SCHEMA_BATCH_SIZE || '5', 10);
+const SCHEMA_CONCURRENCY = parseInt(process.env.SCHEMA_CONCURRENCY || '3', 10);
 const AGENT_MODEL = process.env.LLM_MODEL || undefined;
 const AGENT_ENV: Record<string, string> = {};
-if (process.env.ANTHROPIC_BASE_URL) AGENT_ENV.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL;
-if (process.env.ANTHROPIC_AUTH_TOKEN) AGENT_ENV.ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
-if (process.env.ANTHROPIC_API_KEY) AGENT_ENV.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+if (process.env.ANTHROPIC_BASE_URL)
+  AGENT_ENV.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL;
+if (process.env.ANTHROPIC_AUTH_TOKEN)
+  AGENT_ENV.ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
+if (process.env.ANTHROPIC_API_KEY)
+  AGENT_ENV.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 if (process.env.DISABLE_THINKING) {
   AGENT_ENV.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING = '1';
   AGENT_ENV.MAX_THINKING_TOKENS = '0';
@@ -42,10 +68,18 @@ interface PhaseStats {
 const phaseStats: PhaseStats[] = [];
 
 function calcCost(inputTokens: number, outputTokens: number): number {
-  return (inputTokens / 1_000_000) * INPUT_COST_PER_M + (outputTokens / 1_000_000) * OUTPUT_COST_PER_M;
+  return (
+    (inputTokens / 1_000_000) * INPUT_COST_PER_M +
+    (outputTokens / 1_000_000) * OUTPUT_COST_PER_M
+  );
 }
 
-function recordPhase(name: string, inputTokens: number, outputTokens: number, timeMs: number) {
+function recordPhase(
+  name: string,
+  inputTokens: number,
+  outputTokens: number,
+  timeMs: number,
+) {
   const cost = calcCost(inputTokens, outputTokens);
   phaseStats.push({ name, inputTokens, outputTokens, cost, timeMs });
   console.log(`  Input tokens: ${inputTokens.toLocaleString()}`);
@@ -60,17 +94,21 @@ function printTotalSummary(totalTimeMs: number) {
       outputTokens: acc.outputTokens + p.outputTokens,
       cost: acc.cost + p.cost,
     }),
-    { inputTokens: 0, outputTokens: 0, cost: 0 }
+    { inputTokens: 0, outputTokens: 0, cost: 0 },
   );
 
   console.log(`\n${'━'.repeat(50)}`);
   console.log('  Cost Summary');
   console.log(`${'━'.repeat(50)}`);
   for (const p of phaseStats) {
-    console.log(`  ${p.name}: $${p.cost.toFixed(4)} (${p.inputTokens.toLocaleString()} in / ${p.outputTokens.toLocaleString()} out) [${formatTime(p.timeMs)}]`);
+    console.log(
+      `  ${p.name}: $${p.cost.toFixed(4)} (${p.inputTokens.toLocaleString()} in / ${p.outputTokens.toLocaleString()} out) [${formatTime(p.timeMs)}]`,
+    );
   }
   console.log(`${'─'.repeat(50)}`);
-  console.log(`  Total: $${totals.cost.toFixed(4)} (${totals.inputTokens.toLocaleString()} in / ${totals.outputTokens.toLocaleString()} out)`);
+  console.log(
+    `  Total: $${totals.cost.toFixed(4)} (${totals.inputTokens.toLocaleString()} in / ${totals.outputTokens.toLocaleString()} out)`,
+  );
   console.log(`  Total time: ${formatTime(totalTimeMs)}`);
   console.log(`${'━'.repeat(50)}\n`);
 }
@@ -96,68 +134,28 @@ function formatTime(ms: number): string {
   return `${minutes}m ${remaining}s`;
 }
 
-// --- Helpers ---
-function resolveRefs(schema: any): any {
-  const defs = schema.$defs || schema.definitions || {};
-
-  function resolve(node: any): any {
-    if (node === null || typeof node !== 'object') return node;
-    if (Array.isArray(node)) return node.map(resolve);
-
-    if (node.$ref && typeof node.$ref === 'string') {
-      // Parse "#/$defs/foo" or "#/definitions/foo"
-      const match = node.$ref.match(/^#\/(\$defs|definitions)\/(.+)$/);
-      if (match && defs[match[2]]) {
-        return resolve(structuredClone(defs[match[2]]));
-      }
-      return node;
-    }
-
-    const result: any = {};
-    for (const [key, value] of Object.entries(node)) {
-      if (key === '$defs' || key === 'definitions' || key === '$schema') continue;
-      result[key] = resolve(value);
-    }
-    return result;
-  }
-
-  return resolve(schema);
-}
-
-function normalizeSchema(raw: any): SchemaOutput {
-  // Case 1: already correct format { pages: { landing: {...}, doctor_profile: {...} } }
-  if (raw.pages && typeof raw.pages === 'object' && !raw.pages.type) {
-    return raw as SchemaOutput;
-  }
-  // Case 2: wrapped in JSON Schema { properties: { pages: { properties: { ... } } } }
-  if (raw.properties?.pages?.properties) {
-    return { pages: raw.properties.pages.properties };
-  }
-  // Case 3: flat object with page type keys at top level { landing: {...}, doctor_profile: {...} }
-  if (!raw.pages && !raw.properties) {
-    const keys = Object.keys(raw).filter(k => !k.startsWith('$') && k !== 'title' && k !== 'description' && k !== 'type' && k !== 'additionalProperties');
-    if (keys.length > 0 && typeof raw[keys[0]] === 'object') {
-      return { pages: Object.fromEntries(keys.map(k => [k, raw[k]])) };
-    }
-  }
-  throw new Error('Could not parse schema.json — unexpected format. Check the file manually.');
-}
-
 // --- Phase 1: Crawl ---
 async function phase1Crawl(websiteUrl: string): Promise<void> {
   printPhaseHeader(1, 'Crawl');
   const startTime = Date.now();
 
-  if (existsSync(PAGES_DIR) && readdirSync(PAGES_DIR).filter(f => f.endsWith('.html')).length > 0) {
-    const count = readdirSync(PAGES_DIR).filter(f => f.endsWith('.html')).length;
+  if (
+    existsSync(PAGES_DIR) &&
+    readdirSync(PAGES_DIR).filter((f) => f.endsWith('.html')).length > 0
+  ) {
+    const count = readdirSync(PAGES_DIR).filter((f) =>
+      f.endsWith('.html'),
+    ).length;
     console.log(`  Skipping — ${count} pages already on disk`);
-    printPhaseSummary({ 'Pages on disk': count, 'Time': 'skipped' });
+    printPhaseSummary({ 'Pages on disk': count, Time: 'skipped' });
     return;
   }
 
   mkdirSync(PAGES_DIR, { recursive: true });
 
-  const results = await crawlSite(websiteUrl, { concurrency: CRAWL_CONCURRENCY });
+  const results = await crawlSite(websiteUrl, {
+    concurrency: CRAWL_CONCURRENCY,
+  });
 
   const elementsDir = path.join(OUTPUT_DIR, 'elements');
   const candidatesDir = path.join(OUTPUT_DIR, 'candidates');
@@ -167,21 +165,30 @@ async function phase1Crawl(websiteUrl: string): Promise<void> {
   for (const result of results) {
     savePage(result.url, result.html);
     const baseFile = urlToFilename(result.url).replace('.html', '.json');
-    writeFileSync(path.join(elementsDir, baseFile), JSON.stringify(result.elements, null, 2), 'utf-8');
-    writeFileSync(path.join(candidatesDir, baseFile), JSON.stringify(result.candidates, null, 2), 'utf-8');
+    writeFileSync(
+      path.join(elementsDir, baseFile),
+      JSON.stringify(result.elements, null, 2),
+      'utf-8',
+    );
+    writeFileSync(
+      path.join(candidatesDir, baseFile),
+      JSON.stringify(result.candidates, null, 2),
+      'utf-8',
+    );
   }
 
   const elapsed = Date.now() - startTime;
   printPhaseSummary({
     'Pages crawled': results.length,
     'Candidate files': results.length,
-    'Tokens': 0,
-    'Time': formatTime(elapsed),
+    Tokens: 0,
+    Time: formatTime(elapsed),
     'Saved to': PAGES_DIR,
   });
 }
 
 // --- Phase 2: Structure Analysis (Agent) ---
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Phase orchestration intentionally coordinates prompting, validation, repair, and reporting.
 async function phase2Structure(websiteUrl: string): Promise<void> {
   printPhaseHeader(2, 'Structure Analysis');
   const startTime = Date.now();
@@ -192,15 +199,17 @@ async function phase2Structure(websiteUrl: string): Promise<void> {
   }
 
   // Gather all crawled URLs from disk
-  const pageFiles = readdirSync(PAGES_DIR).filter(f => f.endsWith('.html'));
-  const urls = pageFiles.map(f => {
+  const pageFiles = readdirSync(PAGES_DIR).filter((f) => f.endsWith('.html'));
+  const urls = pageFiles.map((f) => {
     // Reverse urlToFilename: about-us.html → /about-us/
     const name = f.replace('.html', '');
     if (name === 'index') return '/';
-    return '/' + name.replace(/_/g, '/') + '/';
+    return `/${name.replace(/_/g, '/')}/`;
   });
 
-  const urlList = urls.map((u, i) => `${i + 1}. ${u} (file: ${PAGES_DIR}/${pageFiles[i]})`).join('\n');
+  const urlList = urls
+    .map((u, i) => `${i + 1}. ${u} (file: ${PAGES_DIR}/${pageFiles[i]})`)
+    .join('\n');
 
   const systemPrompt = `You are a website structure analyzer. Your job is to analyze crawled URLs, filter out duplicate/auto-generated pages, and group the remaining pages by type.
 
@@ -287,13 +296,17 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       ...(AGENT_MODEL ? { model: AGENT_MODEL } : {}),
-      ...(Object.keys(AGENT_ENV).length > 0 ? { env: { ...process.env, ...AGENT_ENV } } : {}),
+      ...(Object.keys(AGENT_ENV).length > 0
+        ? { env: { ...process.env, ...AGENT_ENV } }
+        : {}),
     },
   });
 
   let turns = 0;
   const heartbeat = setInterval(() => {
-    console.log(`  ⏳ Still working... (${formatTime(Date.now() - startTime)})`);
+    console.log(
+      `  ⏳ Still working... (${formatTime(Date.now() - startTime)})`,
+    );
   }, 30000);
 
   for await (const message of conversation) {
@@ -301,7 +314,9 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
       turns++;
       for (const block of message.message.content) {
         if (block.type === 'tool_use') {
-          console.log(`  🔧 ${block.name} ${typeof block.input === 'object' ? JSON.stringify(block.input).substring(0, 80) : ''}`);
+          console.log(
+            `  🔧 ${block.name} ${typeof block.input === 'object' ? JSON.stringify(block.input).substring(0, 80) : ''}`,
+          );
         }
       }
     }
@@ -309,7 +324,12 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
       clearInterval(heartbeat);
       const resultMsg = message as SDKResultMessage;
       const usage = resultMsg.usage ?? { input_tokens: 0, output_tokens: 0 };
-      recordPhase('Phase 2: Structure', usage.input_tokens ?? 0, usage.output_tokens ?? 0, Date.now() - startTime);
+      recordPhase(
+        'Phase 2: Structure',
+        usage.input_tokens ?? 0,
+        usage.output_tokens ?? 0,
+        Date.now() - startTime,
+      );
       if (resultMsg.subtype !== 'success') {
         throw new Error(`Phase 2 failed: ${resultMsg.subtype}`);
       }
@@ -319,8 +339,12 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
 
   // Read outputs and validate
   const elapsed = Date.now() - startTime;
-  const structure: SiteStructure = JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'structure.json'), 'utf-8'));
-  const filtered: FilteredOutput = existsSync(path.join(OUTPUT_DIR, 'filtered.json'))
+  const structure: SiteStructure = JSON.parse(
+    readFileSync(path.join(OUTPUT_DIR, 'structure.json'), 'utf-8'),
+  );
+  const filtered: FilteredOutput = existsSync(
+    path.join(OUTPUT_DIR, 'filtered.json'),
+  )
     ? JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'filtered.json'), 'utf-8'))
     : { total_filtered: 0, pages: [] };
 
@@ -329,15 +353,15 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
   for (const pt of structure.page_types) {
     for (const url of pt.urls) allStructureUrls.add(url);
   }
-  const allFilteredUrls = new Set(filtered.pages.map(p => p.url));
+  const allFilteredUrls = new Set(filtered.pages.map((p) => p.url));
   const allAccountedUrls = new Set([...allStructureUrls, ...allFilteredUrls]);
 
   // Reconstruct URLs from filenames on disk
-  const diskFiles = readdirSync(PAGES_DIR).filter(f => f.endsWith('.html'));
-  const diskUrls = diskFiles.map(f => {
+  const diskFiles = readdirSync(PAGES_DIR).filter((f) => f.endsWith('.html'));
+  const diskUrls = diskFiles.map((f) => {
     const name = f.replace('.html', '');
     if (name === 'index') return '/';
-    return '/' + name.replace(/_/g, '/') + '/';
+    return `/${name.replace(/_/g, '/')}/`;
   });
 
   const missingUrls: string[] = [];
@@ -349,7 +373,9 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
 
   // Try to assign missing pages to existing page types by matching URL patterns
   if (missingUrls.length > 0) {
-    console.log(`  ⚠ Validation: ${missingUrls.length} pages on disk not accounted for by agent`);
+    console.log(
+      `  ⚠ Validation: ${missingUrls.length} pages on disk not accounted for by agent`,
+    );
 
     let autoFixed = 0;
     const unmatched: string[] = [];
@@ -363,11 +389,13 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
         const patternParts = pt.url_pattern.split('/').filter(Boolean);
 
         if (patternParts.length === urlParts.length) {
-          const matches = patternParts.every((part, i) =>
-            part.startsWith('{') || part === urlParts[i]
+          const matches = patternParts.every(
+            (part, i) => part.startsWith('{') || part === urlParts[i],
           );
           if (matches) {
-            const literalCount = patternParts.filter(p => !p.startsWith('{')).length;
+            const literalCount = patternParts.filter(
+              (p) => !p.startsWith('{'),
+            ).length;
             if (literalCount > bestLiteralCount) {
               bestLiteralCount = literalCount;
               bestMatch = pt;
@@ -409,9 +437,18 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
         pt.urls = [...new Set(pt.urls)];
       }
       // Update totals and save
-      structure.total_kept = structure.page_types.reduce((sum, pt) => sum + pt.urls.length, 0);
-      writeFileSync(path.join(OUTPUT_DIR, 'structure.json'), JSON.stringify(structure, null, 2), 'utf-8');
-      console.log(`  ✓ Auto-fixed: added ${autoFixed} missing pages to structure.json`);
+      structure.total_kept = structure.page_types.reduce(
+        (sum, pt) => sum + pt.urls.length,
+        0,
+      );
+      writeFileSync(
+        path.join(OUTPUT_DIR, 'structure.json'),
+        JSON.stringify(structure, null, 2),
+        'utf-8',
+      );
+      console.log(
+        `  ✓ Auto-fixed: added ${autoFixed} missing pages to structure.json`,
+      );
     }
   }
 
@@ -419,8 +456,8 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
     'Total crawled': structure.total_crawled,
     'Pages kept': `${structure.total_kept} (${structure.page_types.length} types)`,
     'Pages filtered': filtered.total_filtered,
-    'Turns': turns,
-    'Time': formatTime(elapsed),
+    Turns: turns,
+    Time: formatTime(elapsed),
   });
 
   // Show page types
@@ -430,6 +467,7 @@ Write ${OUTPUT_DIR}/filtered.json with this format:
 }
 
 // --- Phase 3: Schema Generation (Agent SDK + programmatic) ---
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Phase orchestration intentionally coordinates sampling, agent runs, recovery, globals, and schema output.
 async function phase3Schema(websiteUrl: string): Promise<void> {
   printPhaseHeader(3, 'Schema Generation');
   const startTime = Date.now();
@@ -439,8 +477,10 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
     return;
   }
 
-  const structure: SiteStructure = JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'structure.json'), 'utf-8'));
-  const allFiles = readdirSync(PAGES_DIR).filter(f => f.endsWith('.html'));
+  const structure: SiteStructure = JSON.parse(
+    readFileSync(path.join(OUTPUT_DIR, 'structure.json'), 'utf-8'),
+  );
+  const allFiles = readdirSync(PAGES_DIR).filter((f) => f.endsWith('.html'));
   const fileSet = new Set(allFiles);
 
   let totalInputTokens = 0;
@@ -461,7 +501,7 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
         urlToFilename(url),
         urlToFilename(websiteUrl + url.replace(/^\//, '')),
       ];
-      const match = candidates.find(f => fileSet.has(f));
+      const match = candidates.find((f) => fileSet.has(f));
       if (match) files.push(path.join(PAGES_DIR, match));
     }
 
@@ -478,7 +518,9 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
 
     if (sampled.length > 0) {
       pageTypeFiles.push({ name: pt.name, files: sampled });
-      console.log(`    ${pt.name}: ${sampled.length}/${files.length} pages to analyze`);
+      console.log(
+        `    ${pt.name}: ${sampled.length}/${files.length} pages to analyze`,
+      );
     }
   }
 
@@ -487,7 +529,7 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
     const batch = pageTypeFiles.slice(i, i + SCHEMA_CONCURRENCY);
 
     const results = await Promise.allSettled(
-      batch.map(pt => runSchemaAgent(pt.name, pt.files))
+      batch.map((pt) => runSchemaAgent(pt.name, pt.files)),
     );
 
     for (let j = 0; j < results.length; j++) {
@@ -498,7 +540,9 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
         schemaStates[ptName] = result.value.state;
         totalInputTokens += result.value.usage.input_tokens;
         totalOutputTokens += result.value.usage.output_tokens;
-        console.log(`    ✓ ${ptName}: ${result.value.state.sections.length} sections found (${result.value.usage.input_tokens + result.value.usage.output_tokens} tokens)`);
+        console.log(
+          `    ✓ ${ptName}: ${result.value.state.sections.length} sections found (${result.value.usage.input_tokens + result.value.usage.output_tokens} tokens)`,
+        );
       } else {
         console.error(`    ✗ ${ptName}: ${result.reason}`);
       }
@@ -510,17 +554,25 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
     if (schemaStates[pt.name]) continue; // already captured from promise
     const stateFile = path.join(OUTPUT_DIR, `schema-state-${pt.name}.json`);
     if (existsSync(stateFile)) {
-      const recovered = JSON.parse(readFileSync(stateFile, 'utf-8')) as SchemaState;
+      const recovered = JSON.parse(
+        readFileSync(stateFile, 'utf-8'),
+      ) as SchemaState;
       try {
         validateSchemaState(pt.name, recovered);
         schemaStates[pt.name] = recovered;
-        console.log(`    ✓ ${pt.name}: ${schemaStates[pt.name].sections.length} sections (recovered from disk)`);
+        console.log(
+          `    ✓ ${pt.name}: ${schemaStates[pt.name].sections.length} sections (recovered from disk)`,
+        );
       } catch (error) {
-        console.error(`    ✗ ${pt.name}: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(
+          `    ✗ ${pt.name}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   }
-  console.log(`  Step 3a complete: ${Object.keys(schemaStates).length} page types`);
+  console.log(
+    `  Step 3a complete: ${Object.keys(schemaStates).length} page types`,
+  );
 
   // --- Step 3b: Detect global components (programmatic) ---
   console.log('  Step 3b: Detecting global components...');
@@ -535,7 +587,7 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
   if (globals.length > 0) {
     console.log('  Step 3c: Standardizing global component names...');
 
-    const globalSelectors = globals.map(g => g.selector);
+    const globalSelectors = globals.map((g) => g.selector);
 
     // Build per-type mappings from schema states (selector → name)
     const perTypeMappings: Record<string, Record<string, string>> = {};
@@ -546,12 +598,17 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
       }
     }
 
-    const standardResult = await standardizeGlobalNames(perTypeMappings, globalSelectors);
+    const standardResult = await standardizeGlobalNames(
+      perTypeMappings,
+      globalSelectors,
+    );
     totalInputTokens += standardResult.usage.input_tokens;
     totalOutputTokens += standardResult.usage.output_tokens;
 
     // Apply standardized names back to schema states
-    for (const [selector, canonicalName] of Object.entries(standardResult.mapping)) {
+    for (const [selector, canonicalName] of Object.entries(
+      standardResult.mapping,
+    )) {
       for (const state of Object.values(schemaStates)) {
         for (const section of state.sections) {
           if (section.selector === selector) {
@@ -561,7 +618,9 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
       }
     }
 
-    console.log(`  Step 3c complete: ${Object.keys(standardResult.mapping).length} keys standardized`);
+    console.log(
+      `  Step 3c complete: ${Object.keys(standardResult.mapping).length} keys standardized`,
+    );
   } else {
     console.log('  Step 3c: No global components to standardize');
   }
@@ -590,7 +649,11 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
     };
   }
 
-  writeFileSync(path.join(OUTPUT_DIR, 'schema.json'), JSON.stringify(schemaOutput, null, 2), 'utf-8');
+  writeFileSync(
+    path.join(OUTPUT_DIR, 'schema.json'),
+    JSON.stringify(schemaOutput, null, 2),
+    'utf-8',
+  );
 
   const elapsed = Date.now() - startTime;
   recordPhase('Phase 3: Schema', totalInputTokens, totalOutputTokens, elapsed);
@@ -598,7 +661,7 @@ async function phase3Schema(websiteUrl: string): Promise<void> {
   printPhaseSummary({
     'Page types': Object.keys(schemaStates).length,
     'Global components': globals.length,
-    'Time': formatTime(elapsed),
+    Time: formatTime(elapsed),
   });
 }
 
@@ -607,41 +670,53 @@ interface SchemaAgentResult {
   usage: { input_tokens: number; output_tokens: number };
 }
 
+interface SchemaPropertyMetadata {
+  _selector?: string;
+  description?: string;
+  _kind?: SchemaSection['kind'];
+  _multiple?: boolean;
+}
+
 function validateSchemaState(pageType: string, state: SchemaState): void {
-  const nonGlobal = state.sections.filter(s => s.kind !== 'global');
+  const nonGlobal = state.sections.filter((s) => s.kind !== 'global');
   if (nonGlobal.length === 0) {
-    throw new Error(`Schema agent produced only global sections for ${pageType}`);
+    throw new Error(
+      `Schema agent produced only global sections for ${pageType}`,
+    );
   }
 }
 
-function compactCandidateFiles(pageType: string, candidateFiles: string[]): string[] {
+function compactCandidateFiles(
+  pageType: string,
+  candidateFiles: string[],
+): string[] {
   const compactDir = path.join(OUTPUT_DIR, 'candidates-compact');
   mkdirSync(compactDir, { recursive: true });
 
   return candidateFiles.map((file, idx) => {
-    const raw = JSON.parse(readFileSync(file, 'utf-8')) as Array<Record<string, unknown>>;
-    const compact = raw
-      .slice(0, 40)
-      .map((candidate) => ({
-        selector: candidate.selector,
-        tag: candidate.tag,
-        parentSelector: candidate.parentSelector,
-        depth: candidate.depth,
-        score: candidate.score,
-        structuralRole: candidate.structuralRole,
-        repeatedSiblingCount: candidate.repeatedSiblingCount,
-        meaningfulChildCount: candidate.meaningfulChildCount,
-        totalTextLength: candidate.totalTextLength,
-        directTextLength: candidate.directTextLength,
-        ownImageCount: candidate.ownImageCount,
-        descendantImageCount: candidate.descendantImageCount,
-        descendantLinkCount: candidate.descendantLinkCount,
-        containsHeading: candidate.containsHeading,
-        inMainContent: candidate.inMainContent,
-        inChromeRegion: candidate.inChromeRegion,
-        classTokensNormalized: candidate.classTokensNormalized,
-        textPreview: candidate.textPreview,
-      }));
+    const raw = JSON.parse(readFileSync(file, 'utf-8')) as Array<
+      Record<string, unknown>
+    >;
+    const compact = raw.slice(0, 40).map((candidate) => ({
+      selector: candidate.selector,
+      tag: candidate.tag,
+      parentSelector: candidate.parentSelector,
+      depth: candidate.depth,
+      score: candidate.score,
+      structuralRole: candidate.structuralRole,
+      repeatedSiblingCount: candidate.repeatedSiblingCount,
+      meaningfulChildCount: candidate.meaningfulChildCount,
+      totalTextLength: candidate.totalTextLength,
+      directTextLength: candidate.directTextLength,
+      ownImageCount: candidate.ownImageCount,
+      descendantImageCount: candidate.descendantImageCount,
+      descendantLinkCount: candidate.descendantLinkCount,
+      containsHeading: candidate.containsHeading,
+      inMainContent: candidate.inMainContent,
+      inChromeRegion: candidate.inChromeRegion,
+      classTokensNormalized: candidate.classTokensNormalized,
+      textPreview: candidate.textPreview,
+    }));
 
     const compactFile = path.join(compactDir, `${pageType}-${idx + 1}.json`);
     writeFileSync(compactFile, JSON.stringify(compact, null, 2), 'utf-8');
@@ -650,18 +725,25 @@ function compactCandidateFiles(pageType: string, candidateFiles: string[]): stri
 }
 
 /** Run one Agent SDK session to identify sections for a page type */
-async function runSchemaAgent(pageType: string, files: string[]): Promise<SchemaAgentResult> {
+async function runSchemaAgent(
+  pageType: string,
+  files: string[],
+): Promise<SchemaAgentResult> {
   const stateFile = path.join(OUTPUT_DIR, `schema-state-${pageType}.json`);
 
   // Convert HTML file paths to reduced candidate JSON file paths
   const candidatesDir = path.join(OUTPUT_DIR, 'candidates');
-  const candidateFiles = files.map(f => {
-    const base = path.basename(f).replace('.html', '.json');
-    return path.join(candidatesDir, base);
-  }).filter(f => existsSync(f));
+  const candidateFiles = files
+    .map((f) => {
+      const base = path.basename(f).replace('.html', '.json');
+      return path.join(candidatesDir, base);
+    })
+    .filter((f) => existsSync(f));
 
   const compactCandidatePaths = compactCandidateFiles(pageType, candidateFiles);
-  const fileList = compactCandidatePaths.map((f, i) => `${i + 1}. ${f}`).join('\n');
+  const fileList = compactCandidatePaths
+    .map((f, i) => `${i + 1}. ${f}`)
+    .join('\n');
 
   const systemPrompt = `You are a web page structure analyzer. You will read JSON files containing REDUCED candidate elements extracted from web pages. Each candidate already survived generic pruning. Each record has a verified CSS selector plus structural signals such as parentSelector, repeatedSiblingCount, directTextLength, totalTextLength, meaningfulChildCount, and structuralRole.
 
@@ -738,7 +820,9 @@ Start by reading the first ${Math.min(SCHEMA_BATCH_SIZE, compactCandidatePaths.l
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       ...(AGENT_MODEL ? { model: AGENT_MODEL } : {}),
-      ...(Object.keys(AGENT_ENV).length > 0 ? { env: { ...process.env, ...AGENT_ENV } } : {}),
+      ...(Object.keys(AGENT_ENV).length > 0
+        ? { env: { ...process.env, ...AGENT_ENV } }
+        : {}),
     },
   });
 
@@ -748,9 +832,14 @@ Start by reading the first ${Math.min(SCHEMA_BATCH_SIZE, compactCandidatePaths.l
     if (message.type === 'result') {
       const resultMsg = message as SDKResultMessage;
       const usage = resultMsg.usage ?? { input_tokens: 0, output_tokens: 0 };
-      agentUsage = { input_tokens: usage.input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0 };
+      agentUsage = {
+        input_tokens: usage.input_tokens ?? 0,
+        output_tokens: usage.output_tokens ?? 0,
+      };
       if (resultMsg.subtype !== 'success') {
-        throw new Error(`Schema agent failed for ${pageType}: ${resultMsg.subtype}`);
+        throw new Error(
+          `Schema agent failed for ${pageType}: ${resultMsg.subtype}`,
+        );
       }
     }
   }
@@ -760,7 +849,9 @@ Start by reading the first ${Math.min(SCHEMA_BATCH_SIZE, compactCandidatePaths.l
     throw new Error(`Schema agent did not create state file for ${pageType}`);
   }
 
-  const state = normalizeSchemaState(JSON.parse(readFileSync(stateFile, 'utf-8')) as SchemaState);
+  const state = normalizeSchemaState(
+    JSON.parse(readFileSync(stateFile, 'utf-8')) as SchemaState,
+  );
   validateSchemaState(pageType, state);
 
   return {
@@ -770,6 +861,7 @@ Start by reading the first ${Math.min(SCHEMA_BATCH_SIZE, compactCandidatePaths.l
 }
 
 // --- Phase 4: Content Extraction (Programmatic — no LLM) ---
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Phase orchestration intentionally coordinates loading, extraction, progress, and output writing.
 async function phase4Content(websiteUrl: string): Promise<void> {
   printPhaseHeader(4, 'Content Extraction');
   const startTime = Date.now();
@@ -779,14 +871,20 @@ async function phase4Content(websiteUrl: string): Promise<void> {
     return;
   }
 
-  const structure: SiteStructure = JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'structure.json'), 'utf-8'));
-  const schema: SchemaOutput = JSON.parse(readFileSync(path.join(OUTPUT_DIR, 'schema.json'), 'utf-8'));
+  const structure: SiteStructure = JSON.parse(
+    readFileSync(path.join(OUTPUT_DIR, 'structure.json'), 'utf-8'),
+  );
+  const schema: SchemaOutput = JSON.parse(
+    readFileSync(path.join(OUTPUT_DIR, 'schema.json'), 'utf-8'),
+  );
 
   // Build section lookup per page type (name → selector from schema)
   const sectionsByType = new Map<string, SchemaSection[]>();
   for (const [ptName, ptSchema] of Object.entries(schema.pages)) {
     const sections: SchemaSection[] = [];
-    for (const [name, prop] of Object.entries(ptSchema.properties as Record<string, any>)) {
+    for (const [name, prop] of Object.entries(
+      ptSchema.properties as Record<string, SchemaPropertyMetadata>,
+    )) {
       sections.push({
         selector: prop._selector || '',
         name,
@@ -799,11 +897,12 @@ async function phase4Content(websiteUrl: string): Promise<void> {
   }
 
   // Build a map of all HTML files on disk for fast lookup
-  const allFiles = readdirSync(PAGES_DIR).filter(f => f.endsWith('.html'));
+  const allFiles = readdirSync(PAGES_DIR).filter((f) => f.endsWith('.html'));
   const fileSet = new Set(allFiles);
 
   // Build list of pages to extract
-  const pagesToExtract: Array<{ url: string; pagetype: string; file: string }> = [];
+  const pagesToExtract: Array<{ url: string; pagetype: string; file: string }> =
+    [];
   for (const pt of structure.page_types) {
     for (const url of pt.urls) {
       const candidates = [
@@ -811,9 +910,13 @@ async function phase4Content(websiteUrl: string): Promise<void> {
         urlToFilename(url),
         urlToFilename(websiteUrl + url.replace(/^\//, '')),
       ];
-      const match = candidates.find(f => fileSet.has(f));
+      const match = candidates.find((f) => fileSet.has(f));
       if (match) {
-        pagesToExtract.push({ url, pagetype: pt.name, file: path.join(PAGES_DIR, match) });
+        pagesToExtract.push({
+          url,
+          pagetype: pt.name,
+          file: path.join(PAGES_DIR, match),
+        });
       } else {
         console.warn(`  ⚠ File not found for ${url}, skipping`);
       }
@@ -846,51 +949,76 @@ async function phase4Content(websiteUrl: string): Promise<void> {
       completed++;
     } catch (error) {
       failed++;
-      console.error(`  ✗ ${page.url}: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `  ✗ ${page.url}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
 
-    if ((completed + failed) % 20 === 0 || completed + failed === pagesToExtract.length) {
-      console.log(`  Progress: ${completed + failed}/${pagesToExtract.length} (${failed} failed)`);
+    if (
+      (completed + failed) % 20 === 0 ||
+      completed + failed === pagesToExtract.length
+    ) {
+      console.log(
+        `  Progress: ${completed + failed}/${pagesToExtract.length} (${failed} failed)`,
+      );
     }
   }
 
   // Write output
-  writeFileSync(path.join(OUTPUT_DIR, 'content.json'), JSON.stringify(output, null, 2), 'utf-8');
+  writeFileSync(
+    path.join(OUTPUT_DIR, 'content.json'),
+    JSON.stringify(output, null, 2),
+    'utf-8',
+  );
 
   const elapsed = Date.now() - startTime;
   recordPhase('Phase 4: Content', 0, 0, elapsed);
 
   printPhaseSummary({
     'Pages to extract': pagesToExtract.length,
-    'Extracted': completed,
-    'Failed': failed,
+    Extracted: completed,
+    Failed: failed,
     'LLM calls': 0,
-    'Time': formatTime(elapsed),
+    Time: formatTime(elapsed),
   });
 }
 
 // --- Main ---
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: CLI entrypoint coordinates argument parsing, setup, and phase dispatch.
 async function main() {
   const websiteUrl = process.argv[2];
   const phaseArg = process.argv.indexOf('--phase');
-  const singlePhase = phaseArg !== -1 ? parseInt(process.argv[phaseArg + 1]) : null;
+  const singlePhase =
+    phaseArg !== -1 ? parseInt(process.argv[phaseArg + 1], 10) : null;
   const outputArg = process.argv.indexOf('--output');
   const outputName = outputArg !== -1 ? process.argv[outputArg + 1] : null;
 
   if (!websiteUrl) {
-    console.error('Usage: bun run index.ts <website-url> [--phase N] [--output <name>]');
+    console.error(
+      'Usage: bun run index.ts <website-url> [--phase N] [--output <name>]',
+    );
     console.error('Example: bun run index.ts https://example.com');
     console.error('         bun run index.ts https://example.com --phase 3');
-    console.error('         bun run index.ts https://example.com --output 2026-04-12_14-30-00');
+    console.error(
+      '         bun run index.ts https://example.com --output 2026-04-12_14-30-00',
+    );
     process.exit(1);
   }
 
-  const timestamp = outputName || new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+  const timestamp =
+    outputName ||
+    new Date()
+      .toISOString()
+      .replace(/[:.]/g, '-')
+      .replace('T', '_')
+      .slice(0, 19);
   OUTPUT_DIR = path.join('output', timestamp);
   PAGES_DIR = path.join(OUTPUT_DIR, 'pages');
 
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-    console.error('Error: Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in .env');
+    console.error(
+      'Error: Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in .env',
+    );
     process.exit(1);
   }
 
@@ -919,6 +1047,9 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('\n❌ Fatal error:', err instanceof Error ? err.message : String(err));
+  console.error(
+    '\n❌ Fatal error:',
+    err instanceof Error ? err.message : String(err),
+  );
   process.exit(1);
 });
